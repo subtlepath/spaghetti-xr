@@ -39,6 +39,34 @@ audited ROM-free unsigned IPA.
 
 ## Phase queue
 
+On 2026-08-01 the project pivoted to a native visionOS app for Apple Vision
+Pro, with stereoscopic rendering in a fully immersive space. The iPadOS lane's
+open gates are **superseded, not completed**: no unclaimed iPadOS result below
+becomes true by abandonment. Preview 3 remains a released artifact and its
+recorded evidence stands.
+
+### visionOS
+
+| Phase | Gate | State | Required evidence |
+|---|---|---|---|
+| 0 | Toolchain spike and pinned bootstrap | Complete | Mixed Swift/Obj-C++/C++ visionOS bundle builds under the Xcode generator; `platform VISIONOS` confirmed as the audit string |
+| 1 | visionOS app configures, links, and launches | Complete | Simulator app bundle links and reaches its SwiftUI launch window |
+| 2 | Compositor Services skeleton | **Complete 2026-08-01**, both halves; a wearer confirmed amber/cyan borders, one/two ticks and per-eye reticle disparity on an Apple Vision Pro | Immersive space opens and renders a per-eye test pattern (device proves both eyes differ) |
+| 3 | Engine on the compositor | **Complete 2026-08-01**, both halves; the device half ran 6 min 15 s at 89–90 Hz with all 33,601 drawables anchored, which the owner accepted in place of ten minutes | Title screen on a floating screen, sustained — ten minutes as written, **six accepted by the owner on 2026-08-01** |
+| 4 | Stereo and immersive environment | **Complete 2026-08-01**: separation measured on device (67.0–70.7 mm across six sessions), world-locking demonstrated, and the wearer drove a comfortable full race and won it. The floor is still misplaced — recorded as a known defect, not as an open gate | Measured on-device stereo separation and a comfortable full race |
+| 5 | Input | **PS VR2 Sense half done 2026-08-01** on device — they enumerate as one combined gamepad and drove a race, buttons and sticks only. Open: **DualSense** (never connected), port order across reconnects, and 6DoF accessory tracking, still a logged refusal | DualSense and PS VR2 Sense races, stable port order across reconnects |
+| 6 | Settings UI | Not started | Every settings page operable with a controller alone |
+| 7 | ROM and texture-pack import | **Import and switch built 2026-08-01; Simulator half passed, device half never run.** The MK64 Reloaded 4K pack (1.18 GiB) imported, loaded as `MK64-Reloaded-SK v2026.0.0`, and rendered enhanced textures in the Simulator. Open: in-app ROM extraction has never been exercised — the Simulator archive was built by Torch on the host | Clean-container ROM import, extraction, and a texture-pack switch |
+| 8 | Audit, packaging, CI, docs | Not started | CI green, audited ROM-free unsigned visionOS artifact with its SHA-256 |
+| 9 | Mode B, 6DoF (experimental) | **Written 2026-08-01; nothing about it is verified.** The engine renders stereo, the compositor feeds it per-eye geometry, and it builds and replays clean. Every claim about what it *looks* like is unmade: the Simulator reports one view, so Mode B declines there by design and only its fallback has been run | One track drivable in 6DoF with a legible HUD |
+
+Stereo separation, immersion, comfort, and all PS VR2 Sense behaviour are
+**device-only** claims: the Vision Pro Simulator renders the left eye only and
+cannot emulate Sense controllers. No Simulator result may be written up as
+proof of stereo.
+
+### iPadOS (retired 2026-08-01)
+
 | Phase | Gate | State | Required evidence |
 |---|---|---|---|
 | 0 | Repo scaffolding and pinned bootstrap | Complete | Clean bootstrap, exact revisions, disabled pushes, ignore checks, safety audit, clean-directory replay |
@@ -47,53 +75,1579 @@ audited ROM-free unsigned IPA.
 | 3 | Full unsigned iOS app links | Complete | iPhoneOS app, platform/min-OS/bundle audit |
 | 4 | Simulator title screen | Complete | Live Metal frame, logs, screenshot, no desktop dialog symbols |
 | 5 | Lifecycle and audio | Complete | Three-cycle continuity, config flush, paused simulation, audible resume |
-| 6 | Signed physical-iPad boot | In progress | Signed install, title screen, ten-minute stability run |
-| 7 | On-device Files extraction | In progress (hardware replay) | Clean-device extraction, failure recovery, measured time/RSS |
-| 8 | Grip-first full-analog touch controls | In progress (iPad/iPhone layout and A-hold slices passed; full GP pending) | Full touch-only GP and analog/menu/lifecycle checks on hardware |
-| 9 | iPad UX and imported texture pack | In progress (Simulator UX/import slice passed; hardware pack GP pending) | Touch-complete UX plus Reloaded import/enable/full-GP hardware gate |
-| 10 | Controllers and split-screen | In progress (Simulator routing/render slice passed; hardware sessions pending) | Two-controller 2P session and measured 3P/4P decision |
-| 11 | Tilt steering | In progress (Simulator slice passed; hardware GP pending) | Persisted, drift-free tilt GP on hardware |
-| 12 | Package, CI, docs, release | In progress (Preview 3 published; exact IPA passed audit and physical-iPhone launch) | Final physical update/save-preservation acceptance |
+| 6 | Signed physical-iPad boot | Superseded 2026-08-01 | Signed install, title screen, ten-minute stability run |
+| 7 | On-device Files extraction | Superseded 2026-08-01 (hardware replay never closed) | Clean-device extraction, failure recovery, measured time/RSS |
+| 8 | Grip-first full-analog touch controls | Superseded 2026-08-01 (layout and A-hold slices passed; full GP never closed) | Full touch-only GP and analog/menu/lifecycle checks on hardware |
+| 9 | iPad UX and imported texture pack | Superseded 2026-08-01 (Simulator UX/import slice passed; hardware pack GP never closed) | Touch-complete UX plus Reloaded import/enable/full-GP hardware gate |
+| 10 | Controllers and split-screen | Superseded 2026-08-01 (Simulator routing/render slice passed; hardware sessions never closed) | Two-controller 2P session and measured 3P/4P decision |
+| 11 | Tilt steering | Superseded 2026-08-01 (Simulator slice passed; hardware GP never closed) | Persisted, drift-free tilt GP on hardware |
+| 12 | Package, CI, docs, release | Superseded 2026-08-01 (Preview 3 published; final update/save-preservation gate never closed) | Final physical update/save-preservation acceptance |
 
 ## Active gate
 
-**Phase 6/7/8/9/10/11 owner hardware replay and final Phase 12
-update/save-preservation acceptance remain open.**
+**Under review: the owner has questioned the ordering, and the objection is
+sound.** On 2026-08-01, after the first hardware run, the owner stated that the
+point of an immersive space is *"to allow the game itself to wrap around the
+viewer in three dimensions"* rather than to build a synthetic room around a flat
+screen — *"otherwise we might as well just use a window with a fixed
+aspect-ratio."*
 
-Expected:
+That is Phase 9, Mode B, which the queue below schedules last and marks
+experimental. The flat screen of Mode A is now demonstrably real on hardware —
+world-locked, stereoscopically placed, 90 Hz, every frame anchored — and it is
+also, by the owner's measure, not the product. The queue's ordering is therefore
+open rather than settled, and the immersive environment built for Phase 4 (sky
+and floor) is scaffolding for a mode that may not be the destination.
 
-1. On the maintainer's local Mac, a signed arm64 iPhoneOS build installs on
-   the connected physical iPad using an available Apple development team and
-   the SpaghettiPad bundle identifier.
-2. The user-supplied desktop-generated `mk64.o2r` reaches only the app's
-   Files-visible Documents container and retains its recorded hash.
-3. A cold hardware launch loads bundled `spaghetti.o2r` plus local
-   `mk64.o2r`, reaches the Mario Kart 64 title/demo sequence, and remains alive
-   for at least ten minutes without watchdog termination.
+What the work so far buys for Mode B, rather than being wasted by it: the device
+anchor, the per-eye view and projection matrices, the measured 68 mm separation
+and the per-view render passes are all prerequisites for drawing the *game* in
+stereo. What Mode B additionally needs is inside the engine, not the shell —
+Fast3D would have to run each frame's display list twice against per-eye view
+and projection matrices substituted for the game's own, with the HUD's
+orthographic passes handled separately so they stay legible.
+
+**That objection has now been acted on rather than only recorded.** Mode B is
+written — see the 2026-08-01 Phase 9 entry below — and the queue's ordering was
+resolved in its favour rather than left open: the engine renders each frame's
+display list once per eye against per-eye view and projection matrices
+substituted for the game's own, with the HUD's orthographic passes handled
+separately, which is precisely what the paragraph above said it would need.
+
+What that changes about this section is smaller than it sounds. Mode B **builds,
+replays clean from the pinned revisions, and passes the audit**, and every claim
+about what it looks like is still unmade: a Simulator reports one view, Mode B
+declines there by design, and only its Mode A fallback has been run. It needs the
+same headset everything else here needs.
+
+**Phase 7, ROM and texture-pack import**, is now half closed by the same work: the
+MK64 Reloaded 4K pack imports, loads, and renders (Simulator), while in-app ROM
+extraction remains written and unexercised. Phase 8's audit, packaging and CI work
+is likewise unblocked.
+
+Everything now open on the visionOS lane besides Phases 7 and 8 is waiting on an
+**Apple Vision Pro**, not on work:
+
+- **Phase 2's device half** and **Phase 3's device half** were blocked on the
+  missing ARKit device anchor. That blocker is gone — see the 2026-08-01 Phase 4
+  entry below — and both are now attemptable the moment a headset is attached.
+- **Phase 4's own gate** — measured stereo separation and a comfortable full
+  race — is **closed**, both halves, on 2026-08-01. The separation was measured by
+  the compositor on hardware at 67.0–70.7 mm; the race was driven by the wearer on
+  PS VR2 Sense controllers, comfortably, and won.
+- **Phase 5's** PS VR2 Sense half and every comfort claim are device-only for
+  the same reasons. Its *binding* half is no longer waiting on anything — see the
+  2026-08-01 Phase 5 entry below. The obstacle turned out not to be the headset:
+  this lane's own window backend was discarding the SDL event that opens a
+  gamepad, so no controller could have worked on hardware either.
+
+A Vision Pro **is** paired with this Mac (`NEW AVP`, visionOS 27.0, Developer
+Mode enabled) and as of 2026-08-01 it is **reachable again**: `devicectl` reports
+it `connected` over a wired tunnel, and the signed Phase 5 build installs and
+launches on it. Earlier entries recording it as `unavailable` with CoreDeviceError
+4016 describe that day's state and are left as written.
+
+Reachable is not the same as observable. The headset cannot be screenshotted —
+`devicectl device capture screenshot` refuses on an Apple Vision Pro — and this
+macOS's `log stream` has no `--device` option at all, so reading the device's log
+needs `sudo log collect --device-udid`, which needs a real terminal rather than an
+agent session. Every device result therefore still comes from a wearer, or from a
+log archive a wearer collects.
+[`docs/VISIONOS_DEVICE_ACCEPTANCE.md`](VISIONOS_DEVICE_ACCEPTANCE.md) is the
+exact sequence for closing those halves when it is connected and worn.
 
 Boundary:
 
-- Phase 5 proves Simulator lifecycle continuity, durable config flush,
+- **The Vision Pro Simulator renders the left eye only.** No Simulator capture
+  may be presented as evidence of stereo, and no Simulator run can demonstrate
+  world-locking, under any circumstances. Its head is not quite as fixed as
+  earlier entries say — with a Simulator.app window open the camera moves and the
+  logged head position moves with it — but that is a window's camera, not a
+  wearer, and it settles nothing about world-locking.
+- Phase 3 put the engine on a flat screen inside the immersive space and Phase 4
+  fixed that screen in the room around it. Neither made the game stereoscopic:
+  both eyes see the same flat picture, differing only in where that picture
+  sits. That is the intended Mode A, and 6DoF remains Phase 9.
+- Import entry points in `visionos/SpaghettiPadBridge.h` remain explicit logged
+  refusals, and so does `SpaghettiPad_AttachAccessoryTracking`. The **input**
+  entry points no longer are — but nothing in the shell routes input and nothing
+  needs to, because the engine's own control deck does. **Audio works** — the
+  SDL/CoreAudio path is live and
+  a wearer has heard it on device; the earlier "no audio" boundary was an
+  untested assumption about `MA_NO_DEVICE_IO`, which disables miniaudio only.
+- The active toolchain is Xcode 27.0 beta (`27A5218g`). No release artifact
+  may be published from it without saying so in the release notes.
+
+### Superseded iPadOS gate (recorded 2026-07-29, closed unmet)
+
+The iPadOS lane's last open gate was owner hardware replay of Phases 6–11 plus
+the final Phase 12 update/save-preservation acceptance. Those were never
+closed and are not claimed. The recorded boundary at the time of the pivot:
+
+- Phase 5 proved Simulator lifecycle continuity, durable config flush,
   simulation/audio pause and resume, live rendering continuation, container
   integrity, and human-confirmed audible music/audio.
-- The physical iPad is connected to the maintainer's local Mac, not this remote
-  build Mac. This machine has no visible iPad, valid code-signing identity, or
-  provisioning profile, so it cannot perform or claim the Phase 6 install.
-- Remote work therefore continues with the explicitly Simulator-valid part of
-  Phase 7: empty-container guidance, ROM validation, recovery, extraction, and
-  relaunch behavior, plus the Simulator-valid touch and imported-pack UI
-  slices of Phases 8 and 9, plus deterministic controller routing and
-  split-screen rendering for Phase 10, plus the persisted CoreMotion-to-stick
-  control path for Phase 11. Hardware time/RSS, Files/iPad behavior, sustained
-  touch ergonomics, real texture-pack performance, Bluetooth controller
-  behavior, split-screen frame time, and a drift-free tilt GP remain owner
-  replay items even when their Simulator equivalents pass.
-- Simulator evidence does not prove signing, installation, watchdog behavior,
+- Simulator evidence did not prove signing, installation, watchdog behavior,
   or audio on physical hardware. Touch, extraction, performance, controller,
-  and texture-pack behavior also remain unclaimed on hardware. Local packaging
-  proves artifact contents, not device installation or runtime behavior.
+  and texture-pack behavior also remained unclaimed on hardware. Local
+  packaging proved artifact contents, not device installation or runtime
+  behavior.
 
 ## Evidence log
+
+### 2026-08-02 (fourth wear) — "Still reversed": the backdrop diagnosis below was wrong, and the right one was sitting in an exclusion this project wrote itself
+
+**The report.** The menu backdrop is still reversed after the readback gating
+below. That verdict retires the capture-path diagnosis as the explanation for
+*this* symptom — the gating fixed a real cross-eye mechanism, but not the one
+the wearer was looking at, because the menu backdrop never touches the
+captured framebuffers at all.
+
+**What the backdrop actually is.** `menu_items.c` draws
+`seg2_blue_sky_background_texture` — one prerendered 320×240 image — through
+`func_80097A14`, which emits it as **full-width texture-rectangle strips** in
+copy cycle. And full-width rectangles were one of `StereoRectOnPanel`'s three
+exclusions, on reasoning this log recorded on 2026-08-01: "a background
+belongs at infinity, and leaving it alone puts it there." It does not.
+Identity coordinates map the image across each eye's *own* NDC, and the eyes'
+views are asymmetric mirrored frustums with a rotational cant — the same
+coordinates mean visibly different directions in the two eyes, skewed
+opposite ways. That is the original three-defect pathology from the first
+Mode B sighting, surviving in the one category of draw the panel fix
+deliberately left untouched. A wearer reading "the backdrop's orientation is
+reversed in the right eye" was describing the mirrored asymmetry itself.
+
+**Changed.** The full-width exclusion is gone. Full-width rectangles are
+still recognised — they are backgrounds by construction — but they now land
+on the backdrop panel: a real object in the recentre frame, identical for
+both eyes, 60 m out and wider than the widest view a headset has reported, so
+the unfilled-band worry the old exclusion answered does not arise. Fill-cycle
+clears and off-screen-framebuffer draws keep their exclusions. Race wipes and
+fades, which are also full-width, ride along to the backdrop, where a fade
+over a deep world reads like a cinema fade rather than a card on the nose.
+
+**Boundary.** Built clean, not worn. The readback gating and the byte-budget
+below stand on their own evidence and remain in the build. If the backdrop
+still misbehaves after this, the next suspect is the strip *interior* — how
+`func_80095E10` tiles the image — and a capture of both eyes, not a verbal
+report, is the instrument that settles it.
+
+### 2026-08-02 (third wear) — The world reads right; what remains is a backdrop drawn by one eye for the other, and a death by memory that the archive names outright
+
+**The report.** The camera-factorisation build below is better. Two things
+remain: the main menu's prerendered backdrop renders with the wrong
+orientation in the right eye, and the game died after several minutes of the
+promo loop. The wearer collected `log collect` evidence for the second.
+
+**The crash is not a crash: `Process SpaghettiPad [1408] killed by jetsam
+reason per-process-limit`,** seconds after a compositor line showing 90 Hz,
+every drawable anchored, nothing skipped, nothing failed. The app was healthy;
+it was simply too big. The mechanism: the Fast3D texture cache is bounded by
+*entry count* — 1024, LRU — which is a byte bound only while every texture is
+N64-sized. The MK64 Reloaded pack makes single entries cost tens of megabytes,
+the promo loop cycles courses, and nothing in this port has ever unloaded a
+resource: both the GPU copies and the decoded CPU copies in the resource cache
+grow until the per-process limit ends the session. **Changed:** the cache now
+also carries a byte bound (1 GiB — several courses of 4K textures, so eviction
+stays off the hot path). Each upload books its bytes against its entry;
+eviction past the budget walks the LRU end, returns the texture id, and — for
+entries whose pixels came from an archive resource — releases the decoded CPU
+copy too, recorded by path at import time. Unloading is safe by construction:
+OTR-path textures resolve at interpret time and reload from the archive on
+demand, and anything in flight is kept alive by the RDP's own shared_ptr.
+
+**The backdrop, found in the capture path.** The port reads the finished frame
+back to the CPU at the end of every rendered pass
+(`FB_WriteFramebufferSliceToCPU`, main.c) into `gPortFramebuffers`, and the
+game draws those pixels back on screen — the menu backdrop among them. Mode B
+interprets the same display list once per eye, so the readback ran twice, and
+whichever eye ran last owned the buffer: within a frame, the first eye
+composited the *previous* frame's last-eye capture while the second composited
+the first's — each eye wearing the other's picture, which is what "the
+orientation is wrong in the right eye" looks like from inside. **Changed:**
+the readback runs only in the frame's last eye. Both eyes now composite the
+same picture, from the same pass, one frame old — mono, like any photograph,
+and consistent between the eyes. It also halves a synchronous GPU→CPU readback
+that was being paid twice per frame.
+
+**Boundary.** Both changes build clean; neither has been worn. The byte
+budget's eviction-under-pressure has not been exercised against a full promo
+cycle, and whether 1 GiB is the right number is a device measurement — if the
+next session still dies by jetsam, the remaining growth is somewhere the
+texture path never touches, and the next archive will say. The backdrop fix
+predicts the menu backdrop reads identically in both eyes; a captured image is
+now knowingly mono, which is correct for a 2D backdrop and a recorded
+limitation for anything that ever composites a capture as scenery.
+
+### 2026-08-02 (later) — The wearer wears the world-locked HUD build: the panel reads right, the world does not, and the cause is one classification reading the wrong matrix
+
+**The report.** The HUD and menus sit at a comfortable distance now — the
+exact projection in the entry below did what it claimed. But "the characters
+and everything rendering in the background feel too close," and head tracking
+does not work: turning the head does not look around. The owner's direction:
+forward may always be the game camera's orientation, but the wearer should be
+able to look around relative to the camera's position.
+
+**The cause, found by reading the game rather than the interpreter.** Mario
+Kart 64 multiplies its camera onto the *projection* stack:
+`gSPMatrix(camera->perspectiveMatrix, G_MTX_LOAD | G_MTX_PROJECTION)` followed
+by `gSPMatrix(camera->lookAtMatrix, G_MTX_MUL | G_MTX_PROJECTION)`, in every
+in-race render path (`render_courses.c`, `code_80057C60.c`,
+`skybox_and_splitscreen.c`). Camera-times-perspective does not classify as a
+perspective matrix — its w row picks up the camera translation, so
+`IsPerspectiveProjection` reads `[3][3] ≠ 0` and says no. The stereo path
+classified the *composed* product. So on the LOAD it classified perspective,
+built the eye frustum and logged recovered near/far — and a moment later the
+camera MUL arrived, the product reclassified as orthographic, and every draw
+after it — the entire racing world — silently took the HUD-panel path: a flat
+projected photograph of the world, at panel distance, deaf to head rotation.
+Both reports are that one defect. The menus classified correctly all along
+because they load their lookAt into the *modelview* stack (`menu_items.c`),
+which is why the 2D fix below was visible while the world stayed wrong.
+
+**The fix: classify the factors, not the product.** The interpreter now tracks
+the game's projection factorised alongside the composed copy: the matrix the
+last LOAD carried (`mStereoGameLoaded` — classification, near/far recovery)
+and the product of every MUL since (`mStereoGamePre` — the game's camera,
+exactly as the game placed it). A perspective replacement is now
+`camera · eyeFromRecentre · frustum`: forward follows the race because the
+camera does, and the wearer's head pose — always present in
+`eyeFromRecentre`, never before reached by the world's draws — looks around
+from there. Nothing about the modelview path changed, so the menus render as
+they did.
+
+**The skybox moved out of the way of the world it stands behind.** With the
+world at real depths, an orthographic skybox on the 2.2 m panel would float
+in front of the track it backs. Orthographic passes are now split by when
+they run: a pass before the frame's first perspective load, in a frame whose
+previous pass over the same display list had one, is scenery and lands on a
+backdrop panel — same construction as the HUD's, 60 m out, ±63° wide, wider
+than the widest eye tangent a headset has reported. Everything else,
+including every 2D pass of a frame with no perspective in it at all, stays at
+reading distance. The prediction flag crosses eyes, so a scene change costs
+one eye's worth of misclassified backdrop and then corrects.
+
+**Boundary.** Built clean; not yet worn. Two things the next wear should
+expect and not mistake for new bugs: the game CPU-culls to its own camera's
+frustum, so looking far off-axis will show geometry popping out at the edges
+of what the game ever submitted; and the stretched sky is cosmetic on
+gradient skies but a texture sky (clouds) will look widened. Both are
+recorded here rather than fixed, because neither has been seen yet.
+
+### 2026-08-02 — The wearer reports back twice, and three changes answer: the HUD leaves the face, the audio survives the window, the window gets out of the way
+
+**Report one: the HUD and menus still render "much too close to my face" in
+stereo.** So the panel fix in the 2026-08-01 entry was worn and found wanting,
+and rereading it against the geometry shows why it could not have been enough.
+The panel was still *head-anchored* — centred on each eye's frustum axis every
+frame — and its convergence was an approximation: a shift computed from the eye
+*translations* alone, as if the two views differed only by where they sit. They
+do not. The eye transforms carry rotation — the interpreter's own perspective
+path honours that cant, which is why the world fuses — and a convergence shift
+that ignores it puts the panel's per-eye images at directions that match no
+single distance. A stereo pair that converges wrongly does not read as "a bit
+off"; it reads as *near*, because near is where the eyes go when disparity
+fights them.
+
+**Changed in the interpreter, and the shift deleted rather than corrected.**
+The panel is now a fixed object in the recentre frame — the same 4:3 rectangle,
+1.76 m across, 2.2 m ahead of where the wearer was when the world was placed,
+at their placement eye height — and `BeginStereoEye` projects its centre
+through each eye's *full* pose, rotation included, every frame. Convergence is
+no longer a term added on top; it is inside the projection, exact by
+construction, cant and all. `mStereoHudShift` is gone from the interpreter, the
+orthographic replacement, and the rectangle path alike. This also world-locks
+the HUD — the recorded follow-up from the last entry, now done because the
+wearer asked in the only way that counts: a cockpit instrument that stays put
+when the head turns, and is behind the wearer (drawn nowhere, by a zero scale)
+if they turn all the way round.
+
+**Report two: audio plays only while the launch window is open; closing it for
+full immersion silences the game.** Nothing in this repository pauses anything
+on window close — `Audio::SetPaused` has no caller — and SDL's CoreAudio
+backend was measured healthy in the last archives. The mechanism is the
+system's: visionOS spatializes an app's audio by default as a head-tracked
+sound stage whose Automatic anchoring strategy anchors it to the app's window
+scene. Dismiss the window and the sound stage loses its anchor; no
+interruption fires, no error surfaces, and SDL has nothing to notice. The
+shell now sets the session's intended spatial experience to **Bypassed** —
+the engine ships a finished stereo mix, panned camera-relative the way the
+game has mixed it since 1996, and re-spatializing that mix against a window
+was never right even while it worked — and registers interruption and
+media-services-reset observers under the `audio` os_log category, so the next
+archive records what fired rather than leaving it to inference. Set in
+`SpaghettiPad_RuntimeInit`, before SDL can open a device.
+
+**And the owner's direction: hide the window in immersive mode; the Digital
+Crown is the way out.** Opening the space now dismisses the launch window as
+its last step — after the engine start request, because the window owns the
+task that request runs on — and the caption says so before the button is
+pressed. The crown path made one thing newly load-bearing: the system ends the
+immersive space without any SwiftUI code being asked, so the app's
+`immersiveSpaceOpen` state goes stale. The compositor thread already noticed
+its renderer go invalid and exited; a new `SpaghettiPad_CompositorRunning()`
+bridge exposes that, and the launch window resynchronises against it when it
+reappears — routing through the existing `onChange`, which joins the finished
+thread. The Simulator's scripted auto-open keeps the window alive explicitly
+(`hideWindow: false`), because its cycle variant runs off a task that window
+owns.
+
+**Boundary.** All three changes build clean; none has been worn. The HUD claim
+is geometric — an exact projection replacing an approximation measured wrong on
+a face — and the audio claim rests on the documented default plus the exact fit
+of the symptom (works with window, dies without, returns with it). The next
+wear answers both, and the new observers make the audio answer legible in the
+archive either way. The device log archive captured for this round could not be
+read on the build host ("corrupt or incomplete"), so nothing above leans on it.
+
+### 2026-08-01 — Mode B is seen: the game renders in stereo on a wearer's face, and the sighting bills three regressions
+
+**The depth-write build (`2773f8c5…`) was worn and the wearer can see the
+game.** That is the first sighting of Mode B by anyone, and it confirms the
+depth-buffer mechanism in the entry below: the only change between black and
+visible was writing a finite depth. What the sighting also did was surface
+three problems that black had been hiding, reported first-hand:
+
+1. **The 2D interface fills the view, is glued to the face, and loses its
+   edges off-screen.** Diagnosed from the geometry, three defects compounding:
+   an orthographic pass left alone maps across each eye's *entire* NDC, but
+   the eyes are asymmetric mirrored frustums (L1.732/R1.000 against
+   L1.000/R1.732), so NDC zero sits ~15 degrees to one side — mirrored — and
+   the two eyes were shown the HUD in incompatible directions, a pair no one
+   can fuse. The view is also far wider than the headset displays, so the 2D
+   passes' edges landed in rendered-but-invisible territory — the same trap
+   that once hid the eye-identity ticks. And `AdjXForAspectRatio`, letterboxing
+   meant for a desktop window, *stretched* x by ~1.29 at the eye's near-square
+   aspect, pushing content further out. **Fixed in the interpreter:** the 2D
+   passes (orthographic matrices and qualifying rectangles alike) now land on
+   a 4:3 panel `kHudPanelWidthMetres` (1.76 m) across at `kHudDistanceMetres`
+   (2.2 m) — the same arc as Mode A's screen, a size a wearer has already read
+   menus at — centred on each eye's own forward axis, with the existing
+   convergence shift on top and the aspect factor cancelled. The rect
+   exclusions (fill-cycle, full-width backgrounds, off-screen framebuffers)
+   keep their old behaviour. The panel is still head-anchored; world-locking
+   it is the recorded follow-up if a wearer asks for it.
+2. **No sound.** Not new to this build: the previous session's archive shows
+   the app's audio session created and **never activated** — and the archive
+   of the black session says the same, so this predates the depth fix and
+   belongs to the Mode B build lineage. The audio code in the working tree is
+   byte-identical to the maintained patch that produced audible sessions, so
+   the failure is at runtime and currently invisible: SPDLOG never reaches a
+   device log. **An `audio` os_log category now reports** the backend chosen
+   (SDL / Null-by-fallback / other), device-open failures with SDL's error
+   string, and the open-and-unpaused success line. The next archive answers
+   this; nothing was changed blind.
+3. **PS VR2 Sense partial: only start and accelerate worked.** The previous
+   archive shows `no game controller is connected` with no connection ever
+   logged and gamecontrollerd seeing no Sense device at the OS level in its
+   window — so in the *newest* session something connected that the archive
+   does not cover. The standing hypothesis, from which buttons worked: **only
+   the right Sense controller joined** — options and cross are both on the
+   right one, and the steering stick is on the left one. The `input` category
+   already logs the connected set by name; the next archive settles it. No
+   code was changed for this.
+
+The build carrying the HUD panel fix and the audio logging is `fa2161cf…`,
+audited signed and ROM-free. Its wear is the next evidence.
+
+### 2026-08-01 — The clip fix was worn and refuted; the counters worked; the answer is the depth buffer
+
+**The wear test.** Build `31981a2f…` — eye quad at z = 0.5, depth writes still
+off — was installed on `NEW AVP` and worn. **Still black.** That kills the
+clipping theory in the entry below as the *whole* answer: a quad strictly
+inside the clip volume changed nothing the wearer could see.
+
+**The counters did their job on their first outing.** The wearer collected a
+log archive, and the new periodic line reads, across two immersive opens:
+`view encodes so far: 1186 eye (Mode B), 0 screen, 0 pattern, 0 skipped; 0
+command buffer(s) failed on the GPU` — exactly two eye encodes per presented
+frame, nothing skipped, no GPU faults, every drawable anchored, 90 Hz. So the
+Mode B branch runs, encodes both views, and presents cleanly every frame, and
+the wearer sees black anyway. The app's pipeline is measured healthy end to
+end; the loss is after the present, in the system compositor. No system-side
+log line complains, because nothing is wrong by the system's lights.
+
+**The mechanism, which explains this run and every run before it.** The eye
+pass **wrote no depth** — `eyeDepthState_` was compare-Always, write-off, by a
+comment that reasoned writing far depth "would be a worse answer than saying
+nothing". But not writing *is* saying far plane: the pass clears depth to 0.0
+(reverse-Z far) and nothing in Mode B ever writes over it, so every pixel of
+every Mode B frame told the compositor its content was at infinity, and the
+compositor's reprojection shows a far-plane pixel as nothing there. That is
+why the constant-green shader was black (colour was never the problem), why
+the vertex-z fix was black (writes were still off), and why Mode A was always
+fine (its sky box writes finite depth over every pixel). It also re-explains
+the old sky bug more precisely than the clipping theory did: the far-plane
+clip-space sky *drew* — the wearer saw a void where its colour went because
+its depth stayed at the far plane, while the depth-writing floor grid beside
+it stayed visible, and rewriting its fragment reconstruction changed nothing
+because colour was never consulted.
+
+**What was changed.** `eyeDepthState_` now writes depth, and the eye quad's
+depth is computed rather than chosen: `kEyeContentDistanceMetres` (2.0 m — the
+distance Mode A's screen has been comfortably reprojected at all along) pushed
+through each view's own `cp_drawable_compute_projection`, so the value written
+is whatever that drawable's reverse-Z mapping says 2 m is. A single plane
+stands in for a world of real depths, so distant scenery will swim slightly
+under head motion until the engine's own depth buffer is carried across; what
+it buys is that the picture exists. The shaders still compile offline against
+the xros SDK.
+
+**Boundary.** The mechanism is inferred from the correlation across every
+device session — far-plane depth has never been seen, written depth always has
+— plus the healthy counters above; no Apple document was consulted that states
+it outright. It predicts the next wear shows the game in stereo at last, and
+if that is wrong the next suspect is real: something between
+`cp_drawable_encode_present` and the display that neither the counters nor the
+command-buffer watch can see.
+
+### 2026-08-01 — Mode B's black frame, found by reading rather than wearing: the eye quad was emitted at exactly the far plane
+
+**The bug.** Mode B's present quad — the one draw that puts a finished eye
+texture onto the drawable — emitted clip coordinates with **z = 0.0 exactly**,
+which under reverse-Z is the far plane. This project already measured, once,
+what this headset does with a full-viewport primitive at exactly that depth:
+the original clip-space sky rasterized on the Simulator and never on the
+device, and two rewrites of its *fragment* reconstruction changed nothing —
+which is precisely the signature of vertices that never survive clipping,
+because no fragment ever ran. The eye quad was the same construct at the same
+depth, and it is the one construct in the lane that has never run anywhere
+else: Mode B declines on the Simulator, so unlike the sky there was no
+working-in-one-place comparison to notice.
+
+**Why every measurement in the entry below fits.** The constant-green fragment
+shader stayed black because the quad was clipped before any fragment ran —
+fragment changes cannot rescue a clipped vertex, exactly as they could not
+rescue the sky. The magenta-stained eye textures were invisible for the same
+reason. The engine's rendering was correct throughout because it was: the
+pipeline wrote perfect pictures into textures whose composite draw was then
+discarded by the rasterizer. And what the wearer called black was the eye
+pass's own clear colour, (0.02, 0.02, 0.03). The correlation across every
+device session is exact: every primitive ever seen on hardware — pattern rects
+at reticle depth, the sky box, the floor, the screen — emits clip z strictly
+greater than 0; the two that were never seen — the old sky and the eye quad —
+emitted exactly 0.
+
+**What was changed, all of it in repo-owned `visionos/` files.**
+
+- `eye_vertex` now emits z = 0.5. The eye depth state neither tests nor writes,
+  so the value only has to survive clipping; it says nothing about where the
+  picture is.
+- `eye_fragment` is restored to sampling the eye texture — the constant-green
+  diagnostic is gone.
+- `EncodePattern`'s fallback depth for an unprojectable reticle was also 0.0 —
+  the same bug class, which would have made the whole test pattern invisible on
+  device during any frames before tracking converges. It is now 0.5.
+- **The branch counters the entry below asked for exist.** `EncodeViews` counts
+  eye/screen/pattern encodes and skipped views, logged every 600 frames beside
+  the existing counters, so a session's log now states what was encoded all
+  session long instead of once on the first stereo frame.
+- **Command buffers are checked for GPU errors** from their completion handler
+  (first three logged in full, total counted in the periodic line). A faulting
+  command buffer has no CPU-side symptom otherwise, and this run of hypotheses
+  should have been able to kill that one by measurement instead of inspection.
+- **The stereo -> flat -> stereo question is now answerable from a log.**
+  `SetStereoRequested` logs on change, so a surface flip with that line beside
+  it is the wearer's toggle; the compositor logs transitions of per-eye view
+  validity with the pose and room state, so a flip without it names its cause.
+- The shell's temporary diagnostics — the per-acquire eye stain with its
+  synchronous GPU wait, and the slot/pointer logs — are removed; slot
+  bookkeeping is measured clean in the entry below and the stain would have
+  dragged on a 90 Hz verification run. The engine-tree diagnostics in
+  `interpreter.cpp`, `gfx_metal.cpp` and `Gui.cpp` are untouched and still
+  outside the maintained patches.
+
+**What was verified, which does not include the only thing that matters.**
+Simulator and device lanes both build (direct `cmake --build`, preserving the
+engine-tree diagnostics; the pristine-tree guard still refuses the script, as
+it should). The device audit passes with `REQUIRE_SIGNED=1`: arm64, signed,
+executable SHA-256
+`31981a2fcda0ee05a66a30e18753053330661cb66a15da11787520f07d5e73b2`, archive
+content SHA-256 unchanged and still ROM-free. All four embedded Metal shader
+sources compile offline against the xros SDK — they are compiled at runtime,
+where a syntax slip would otherwise first appear. **No wearer has seen this
+build.** The diagnosis is a reading of the project's own device evidence, not
+a device result; if it is right, the next wear of Mode B shows the game in
+stereo, and if it is wrong, the branch counters now say which encoder actually
+ran while the wearer saw whatever they saw.
+
+### 2026-08-01 — Mode B's first hardware run: it engages, it renders, and the wearer sees black
+
+**This entry is mostly negatives.** Nine build-install-wear cycles on `NEW AVP`
+(visionOS 26, M2) produced no fix and a great deal of eliminated ground. The
+eliminations are the value here: five specific hypotheses were killed by
+measurement, and re-deriving any of them would cost another evening.
+
+**What is true and was not before.** Mode B is no longer unseen. It engages on
+hardware, and the engine half of it works:
+
+```
+surface:    render surface ready: stereo, 1856 x 1792 per eye, 2 eye(s), 3 buffers (76.1 MiB)
+surface:    Mode B: first stereo frame, tangents L1.732 R1.000 U1.000 D1.192
+                                              / L1.000 R1.732 U1.000 D1.192
+compositor: Mode B: drawing the game in stereo, 1856 x 1792 per eye
+compositor: 2401 frames presented at 90 Hz, 2359 showing the engine (1458 in stereo);
+            2401 drawables anchored, 0 not
+```
+
+**Mode A is unaffected throughout.** The flat screen renders correctly and audio
+plays for the whole session, in every run below. Whatever this is, it is Mode B's
+alone.
+
+**What was eliminated, each by a measurement rather than an argument.**
+
+- **The projection substitution.** Probe points pushed through both the game's
+  matrix and the replacement, logged as NDC: `(0,0,-100)` → `(+0.102, +0.016,
+  +0.952)` with `w +89.70`; `(200,100,-500)` → `(+0.314, +0.374, +0.992)` with
+  `w +502.75`. Positive `w` everywhere, x and y inside ±1. Geometry is projected
+  on screen, and the two eyes differ correctly (`+0.102` against `-0.322` on the
+  forward probe) by the frustum cant.
+- **The near-plane clamp.** It does compress the visible world into NDC z
+  `[0.95, 1.0]` — the game asks for near 100 and the clamp gives 2.18 — and that
+  will cause z-fighting once a picture exists. It is **not** the black frame:
+  disabled for one run, `near 100.000`, still black.
+- **The viewport.** `in (0,240 320x240) -> out (0,0 1856x1792)`, with `cur`,
+  `window` and `gameWindowViewport` all agreeing at 1856x1792 and `offsetApplied
+  0`. `AdjustVIewportOrScissor`'s window-relative offset — a real suspect, since
+  visionOS has no window — never fires.
+- **The ring's slot and eye bookkeeping.** Each eye texture was stained a
+  distinct colour at the moment the engine was handed it, and the pointers
+  logged at both ends: `handing the engine slot 0 eye 0 (0x135ed8f00)` against
+  `presenting slot 0 eye 0: srgbView 0x135ed9180 over texture 0x135ed8f00`. They
+  pair exactly, for both eyes, `stereo yes`.
+- **The ImGui size guard.** `gfx_metal.cpp`'s "workaround for detecting when
+  transitioning to/from full screen mode" silently returns without drawing when
+  the screen texture and ImGui's display size disagree — the only code in the
+  pipeline that can draw nothing while every input is correct. It never fires:
+  `screen texture 1856x1792 vs drawData 1856x1792 … -> upstream would draw`.
+
+**What else was measured and found correct.** Triangles reach the rendering API
+— `4737 triangles, 409 clipped away, 1381 culled, 2947 drawn` per eye, which is
+an ordinary scene ordinarily drawn. The ImGui composite that is the only thing
+ever putting the game onto the presented surface is issued correctly: `fb
+0x1334fea80 pos (0.0,0.0) size 1856.0x1792.0 windowSize 1856.0x1792.0`. The
+compositor's `EncodeEye`, its `MTLCompareFunctionAlways` depth state and its eye
+shader are correct by inspection, and `eyePipeline_` is non-nil or the compositor
+would have refused to start.
+
+**The measurement that breaks the story.** Every framebuffer was cleared to
+magenta for one run — the log confirms both `framebuffer 1` (`mGameFb`) and
+`framebuffer 0` (the eye texture) cleared at 1856x1792 — and the wearer saw
+black, not magenta. Mode A correctly showed no magenta, because the game draws
+over the clear. Then the eye shader was reduced to `return float4(0,1,0,1)`,
+removing the texture, the sampler and the ring from the question entirely.
+**Still black.**
+
+A constant-colour fragment shader that does not reach the wearer means Mode B's
+present is not painting, and that every measurement above describes a pipeline
+whose output never reached the display. The engine renders correctly into
+textures nobody sees.
+
+**What to do next, and what not to.** Do not re-examine the projection, the
+viewport, the near plane, the slot bookkeeping or the ImGui guard; they are
+measured and clean. The missing thing is observability in the compositor itself:
+**count which branch each frame takes** — `EncodeEye`, `EncodeScreen`,
+`EncodePattern` — and log it periodically alongside the frame counters. Every
+wrong turn in this entry came from trusting `Mode B: drawing the game in stereo`,
+which is logged once, on the first stereo frame, and says nothing about the
+thousands after it. The surface is also seen flipping `stereo -> flat -> stereo`
+within a session; whether that is the wearer using the toggle or the mode
+collapsing on its own has never been established, and the branch counters would
+settle that too.
+
+**The diagnostics are not in the maintained patches.** They were built directly
+with `cmake --build build-visionos --config Release --target Spaghettify`, which
+bypasses `apply-patches.sh` and its pristine-tree guard. The working tree
+therefore carries temporary instrumentation in `interpreter.cpp`, `Gui.cpp`,
+`gfx_metal.cpp`, `SpaghettiPadRenderSurface.mm` and `SpaghettiPadCompositor.mm`
+that must be reverted or deliberately kept before either patch is regenerated.
+
+### 2026-08-01 — Mode B: rectangles were never in stereo at all, read out of RT64's classification
+
+**Where this came from.** RT64 was cloned to answer whether it could replace
+Fast3D. It cannot — its entry point is
+`Application::processDisplayLists(uint8_t *memory, uint32_t dlStart, uint32_t
+dlEnd, bool isHLE)` against a raw RDRAM image, and it re-implements the RSP and
+RDP including TMEM, while this port's display lists carry host pointers and OTR
+resource handles (`G_SETTIMG_OTR_HASH`, and `words.w1` holding a `Texture*` at
+`interpreter.cpp:4194`). There is no seam to join them at without rebuilding the
+asset pipeline back into N64 physical memory. What RT64 *does* have that Mode B
+wanted is its classification of draws, and that reads across for free.
+
+**What it found, which the engine had no name for.** RT64 gives a rectangle a
+projection type of its own — `Projection::Type::Rectangle`, listed beside
+`Orthographic` rather than inside it (`rt64/src/hle/rt64_projection.h`). Fast3D
+behaves the same way without saying so: `GfxDrawRectangle` writes clip
+coordinates straight into `loaded_vertices` and calls `GfxSpTri1` with `is_rect`
+set, so `P_matrix` is never consulted and `Interpreter::StereoProjection` never
+ran for a single rectangle.
+
+Identical coordinates in both eyes are zero disparity, and zero disparity is
+converged at infinity. The orthographic half of the HUD was deliberately placed
+at 2.2 m for precisely that reason — infinity being the one distance guaranteed
+to fight everything else in view — and the rectangle half was still at infinity
+the whole time. The game makes 23 live `gSPTextureRectangle` /
+`gDPFillRectangle` calls: eight in `menu_items.c`, five each in
+`skybox_and_splitscreen.c` and the debug `profiler.c`, four in
+`render_objects.c`. The menus are the clearest case, since a menu is read at
+length and at leisure.
+
+**What was built.** `Interpreter::StereoRectShift` applies the same
+`mStereoHudShift` the orthographic path already uses. A rectangle is in clip
+space with `w = 1`, so what `StereoProjection` folds into a matrix as a multiple
+of w is here simply added to x, and the two halves of the HUD land at the same
+distance rather than at two different ones. It is decided before
+`AdjXForAspectRatio` — which scales about zero and would move the very edges
+being tested — and applied after it.
+
+Three kinds of rectangle are excluded, each because moving it would be wrong
+rather than because moving it is hard:
+
+- **Fill-cycle rectangles.** `G_CYC_FILL` is how this game clears:
+  `init_z_buffer` and its splitscreen counterpart point the colour image at the
+  z-buffer and fill it. A clear has no distance to be placed at, and shifting one
+  leaves a band of the previous frame along the edge it moved away from.
+- **Rectangles spanning the full framebuffer width.** A background cannot move
+  sideways without opening that same unfilled band, and a background belongs at
+  infinity anyway — which is where leaving it alone already puts it.
+- **Rectangles drawn into an off-screen framebuffer.** The shift belongs to the
+  draw that reaches the eye, which is the later one compositing that target onto
+  the screen. Applying it twice would converge a texture that already had
+  convergence painted into it.
+
+`IsPerspectiveProjection` also gained RT64's vertical-scale term from
+`RSP::getCurrentProjectionType`: a matrix can divide by depth and still be
+degenerate, and no frustum can be recovered from one. Misreading such a matrix as
+flat costs a frame of the HUD's convergence; misreading it as perspective costs a
+frame of geometry smeared across the wearer's field of view.
+
+**What was verified, which does not include how any of it looks.**
+
+- `libultraship-visionos.patch` was regenerated and **replays clean from the
+  pinned revisions**; the replayed tree is byte-identical to the tree that was
+  built. libultraship compiles for `arm64-apple-xros26.0-simulator` with
+  `__VISIONOS__` defined, and `StereoRectShift` is present in `interpreter.o` as
+  `__ZNK4Fast11Interpreter15StereoRectShiftEffj`.
+- **Nothing was run, and nothing was seen.** The Simulator reports one view, so
+  Mode B declines there and no rectangle in this change has ever been drawn with
+  a shift applied to it. This is a compile-and-replay result and nothing more.
+- **The exclusion rules are reasoned from the display list, not observed.** They
+  were derived by reading `skybox_and_splitscreen.c` and the fill-cycle setup
+  around it, not by watching a frame. A wearer is what would show whether the
+  full-width test catches everything it should — a background that is drawn a
+  column short of the edge would slip past it and be shifted.
+- **2.2 m is still an unchecked number.** This change converges rectangles at the
+  same distance the orthographic HUD uses, so if that distance is wrong it is now
+  uniformly wrong instead of wrong in one half. That is an improvement in
+  consistency and not evidence about comfort.
+- RT64 is MIT-licensed. No RT64 code was copied — what was taken is the
+  distinction its types draw, and the comments name where it came from.
+
+### 2026-08-01 — visionOS Phases 9 and 7: Mode B is written and the 4K pack renders, and only one of those two sentences has been seen by anyone
+
+**What was built.** Mode B — the game drawn in stereo, rather than a flat picture
+of it hung on a screen — and the texture-pack path the 4K pack needs to get in.
+
+- **The stereo happens at the projection matrix and nowhere else.** A vertex
+  reaches the game's projection already in Mario Kart 64's camera space, and that
+  space is axis-for-axis what Compositor Services calls right-up-back. So the
+  game's camera and the wearer's head are declared the same thing, and the only
+  substitution needed is the projection: `Interpreter::StereoProjection` replaces
+  each perspective matrix the game loads with that eye's own frustum, composed
+  with where that eye is relative to the pose the world was placed from. Nothing
+  touches the modelview stack, the vertex transform, lighting, or clipping.
+- **The game's near and far planes are kept, not replaced.** They are recovered
+  from the matrix the game loaded — F3D projections are OpenGL-convention, so the
+  depth row inverts exactly — because they are the game's statement about how far
+  it means to draw. The eye's frustum decides the *shape* of the view, which
+  belongs to the headset; it has no opinion about draw distance, which does not.
+  The near plane is pulled in to 0.12 m so that leaning forward does not open a
+  hole in the world, which the game's own value, chosen for a camera bolted behind
+  a kart, would.
+- **Two conventions had to be honoured and are easy to conflate.** Fast3D expects
+  clip z spanning `[-w, w]` and remaps it to Metal's `[0, w]` itself, on the CPU,
+  in `GfxSpTri1` — a Metal-convention projection handed straight over would be
+  remapped twice and put every polygon in the front half of the depth buffer. And
+  `AdjXForAspectRatio` letterboxes a 4:3 game onto a wider window afterwards,
+  which is meaningless when the frustum already *is* the shape of the eye, so the
+  frustum cancels that factor in advance rather than teaching the vertex path
+  about a mode it otherwise ignores.
+- **The HUD is handled separately, as the plan said it would have to be.** Its
+  orthographic passes keep their own matrices and gain a per-eye sideways shift in
+  clip space, which puts it at 2.2 m instead of at infinity — infinity being the
+  one distance guaranteed to fight everything else in view.
+- **`cp_view_get_tangents` was not used**, though it returns exactly what is
+  wanted in one call: it has been deprecated since visionOS 2.0 in favour of
+  `cp_drawable_compute_projection`, so the four tangents are read back out of that
+  matrix instead. They invert exactly, and nothing about its depth convention
+  matters here.
+- **A frame is now a slot rather than a texture.** The ring holds one texture per
+  eye and publishes a slot only once every eye of it has been written: half a
+  stereo frame would put one eye a frame ahead of the other. Both eyes of a frame
+  are also rendered from **one latched head pose** — using a fresher pose for the
+  second eye sounds like an improvement and is the exact shear that makes a stereo
+  pair impossible to fuse.
+- **Only the last eye paces the frame.** Two submissions make one frame; pacing
+  both would have halved the frame rate in a way that looked like stereo costing
+  twice what it does.
+
+**What was verified, which is less than the above might suggest.**
+
+- Both maintained patches were regenerated and **replay clean from the pinned
+  revisions**; device and Simulator builds succeed and the visionOS audit passes.
+  Unsigned device binary `0713389ba28064ae33c18f1ff3327f658a303ffb38c1a4284e8b88e6c194480b`.
+- **The 4K pack renders.** `mk64-reloaded-v2026.04.03-sk-4k.o2r` (1.18 GiB) was
+  placed in `Documents/mods/` — by hand, which is byte-for-byte what
+  `SpaghettiPad_ImportModArchive` now does — and the engine reported
+  `Loaded mod: MK64-Reloaded-SK v2026.0.0` and added the archive. With
+  `gEnhancements.Mods.AlternateAssets` on, resident memory went from **265 MiB to
+  707 MiB** and the captured frame shows the pack's own art: mowed-stripe grass,
+  gravel road detail, a crisp billboard.
+  ([screenshot](screenshots/visionos-4k-texture-pack.png))
+- **Nothing about Mode B's appearance has been seen by anyone.** The Simulator
+  reports **one view**, so Mode B declines there by design — the log line reads
+  `Mode B is unavailable here: this drawable reports 1 view(s), so there is no
+  second eye to render one` — and the surface allocated `flat, 1920 x 1080, 1
+  eye(s)`. What that run proves is the **fallback**: Mode A still renders, at
+  60 Hz, unchanged by the interpreter surgery above. It is not evidence of stereo
+  and is not offered as any.
+- **`NEW AVP` is paired but not connected** (`available (paired)`, no tunnel), so
+  the device half was not attempted. Phase 9's gate — one track drivable in 6DoF
+  with a legible HUD — stays open, and so does every question a wearer answers:
+  whether two interpreter passes hold 90 Hz, whether they hold it under the 4K
+  pack, whether the HUD is legible at 2.2 m, and whether the world scale is right.
+- **The world scale is a guess and is exposed as one.** 55 mm per game unit,
+  derived from karts that ought to read as about 1.4 m of go-kart. Nothing in the
+  ROM says. It is a slider in the launch window rather than a constant in Fast3D
+  precisely so the first wearer can disagree with it without a rebuild.
+- **In-app ROM extraction is still unexercised.** `GameExtractor` now scans the
+  app container for a `.z64` on visionOS and `SpaghettiPad_ImportRom` puts one
+  there, but the Simulator's `mk64.o2r` was built by running Torch on the host.
+  The path is written; it has not been run.
+
+### 2026-08-01 — visionOS Phase 5: the reason no controller worked was one line in this lane's own window backend, and with it gone the owner drove a race and won it
+
+- **The device result, which is the one that counts.** With the signed build above
+  installed on `NEW AVP`, the owner — wearing it — drove a race, finished **1st**,
+  and reports the session as **comfortable**. That is the first race ever driven
+  in this lane and the first time any button has reached this game here.
+- **The controller was not the one first reported, and the log is why this is
+  recorded correctly.** The owner reported a DualSense. The device's own log names
+  the connected device
+  **`PlayStation VR2 Sense Controllers (L/R)`**, reports `1 game controller(s)`
+  for the whole session, and never reports a second device or another name. No
+  DualSense was connected in the collected window. The first-hand report and the
+  log disagreed, and the log is the record kept here — this is exactly the kind of
+  claim the `input` category was added to settle rather than have to remember.
+- **PS VR2 Sense controllers therefore enumerate, and they enumerate as one
+  gamepad, not two.** GameController presents the pair as a single combined
+  device; SDL opened it, the control deck bound it to port 0, and it drove the
+  game. This was an open question — the acceptance guide said whether they
+  enumerate at all was itself the finding — and the answer is that they do.
+  **Their 6DoF pose does not**, and nothing here claims it:
+  `SpaghettiPad_AttachAccessoryTracking` is still an explicit logged refusal, so
+  what worked is buttons and sticks, with the Sense controllers acting as an
+  ordinary gamepad rather than as tracked spatial controllers.
+- **Input reached the game, logged at the point of use:**
+  `port 0 first input reached the game: buttons 0x0010, stick (0, 0)` — `0x0010`
+  is `BTN_R` — 12.9 seconds after the controller connected.
+- **The session, in numbers, all from the device.** Two immersive-space opens; the
+  second ran to `compositor stopped after 19871 frames` at **89–90 Hz**, with the
+  engine finishing 7,207. **Every drawable was anchored and none went without**,
+  `com.apple.CompositorNonUI` logged `Presenting a drawable without a device
+  anchor` **zero** times, and the app's subsystem logged **no error-level line at
+  all**. The first drawable reported `2 view(s), 2 texture(s), 2 rasterization
+  rate map(s)` — the dedicated layout, still correct — with distinct non-zero eye
+  offsets per view.
+- **Stereo separation, two more measurements: 67.0 mm and 67.6 mm**, with the
+  screen centre at 0.6384/0.3575 and 0.6430/0.3623 across the two views (disparity
+  0.281 of a view width, matching the earlier runs exactly). These sit just below
+  the previously recorded 68.4–70.7 mm, so the observed range across six sessions
+  is now **67.0–70.7 mm**.
+- **The floor rule behaved as the earlier entry predicted and is still wrong.**
+  The head was 0.89 m above the world origin and the floor was drawn at that
+  origin. Nothing here measures the real floor; it needs plane detection and
+  world-sensing authorization.
+- **This closes Phase 4.** Its gate is a measured on-device stereo separation and
+  a comfortable full race. Both are now on hardware. Phase 4's comfort half had
+  been open only because no race could be driven, and that was Phase 5's obstacle
+  rather than Phase 4's.
+- **It does not close Phase 5.** Its gate asks for DualSense *and* PS VR2 Sense
+  races plus stable port order across reconnects. The Sense half is met for
+  buttons and sticks. **The DualSense half is now the unmet one** — no DualSense
+  has been connected to this app — and no reconnect or multi-controller port
+  ordering was exercised at all.
+
+- Toolchain: Xcode 27.0 beta (`27A5218g`), XRSimulator 27.0 SDK, CMake 4.4.2
+  under the Xcode generator. arm64, visionOS 26.0 deployment target, Release.
+- **The bug, which is entirely this project's own.** `GfxWindowBackendVisionOS::HandleEvents`
+  drained SDL's whole event queue every frame with `while (SDL_PollEvent(&event))`,
+  discarding everything. Two of the events it discarded were
+  `SDL_CONTROLLERDEVICEADDED` and `SDL_CONTROLLERDEVICEREMOVED`, and those are not
+  the window backend's to consume: `Ship::SDLAddRemoveDeviceEventHandler` takes
+  them out of the queue from inside the GUI update, and it is the **only** caller
+  of `ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads` — the one
+  function that opens an SDL gamepad and makes it visible to a port. The drain ran
+  first, so the handler found an empty queue, no gamepad was ever opened, and
+  `GetConnectedSDLGamepadsForPort` returned nothing forever.
+- **The SDL2 backend does not have this bug, and its shape says why.** It peeps
+  two ranges — `SDL_FIRSTEVENT … SDL_CONTROLLERDEVICEADDED - 1` and
+  `SDL_CONTROLLERDEVICEREMOVED + 1 … SDL_LASTEVENT` — which skip exactly those two
+  adjacent events and leave them for the handler. That is a deliberate gap and it
+  was not carried across when this lane's backend was written in Phase 3. The
+  visionOS backend now peeps the same two ranges.
+- **Everything else was already in place, which is why this was invisible.** SDL's
+  MFi driver is compiled into this lane — `SDL_mfijoystick.o` is in the built
+  `libSDL2.a` and exports `SDL_IOS_JoystickDriver` — `SDL_JOYSTICK_MFI` is `1` in
+  the generated `SDL_config.h`, libultraship calls
+  `SDL_Init(SDL_INIT_GAMECONTROLLER)` in `os.cpp`, and `ControlDeck::Init` already
+  gives port 0 `PhysicalDeviceType::SDLGamepad` default mappings. Nothing needed
+  adding. `SDL_PrivateJoystickShouldIgnoreEvent` was read rather than assumed as
+  well: it gates on `SDL_HasWindows()`, which is false with no video subsystem, so
+  a windowless app does not need `SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS` and
+  none is set.
+- **This corrects "No controller works, and none can" in the entry below.** That
+  claim was written from the shell's logged refusals — `SpaghettiPad_InputInit`
+  and the rest — and those refusals were real but were not the obstacle. Nothing
+  in the shell routes input and nothing needs to: the engine's own control deck
+  does all of it. The shell's input entry points are no longer refusals, but what
+  they now do is report, not route.
+- What was added, all of it reporting rather than routing:
+  - `SpaghettiPad_InputDevicesChanged(count, names)` — the set of controllers the
+    control deck has **opened**, read from `ConnectedPhysicalDeviceManager` rather
+    than from SDL's raw device list, because a pad SDL enumerates but has no
+    mapping for is never opened and reads as no controller at all. Reported on
+    change, and always once at startup: a log with no line about controllers would
+    not distinguish "none connected" from a reporting path that never ran.
+  - `SpaghettiPad_InputFirstActivity(port, buttons, stickX, stickY)` — logged once
+    per port from `LUS::ControlDeck::WriteToOSContPad`, at the point where the pad
+    has been read and is about to be acted on. A controller being *connected* and
+    a controller being *read* are separate claims and only the second is Phase 5's
+    gate. A stick threshold of 20 is required for a stick-only report so that a
+    resting analog stick that has drifted is not written up as the game being
+    driven; a button needs no such allowance.
+  - A new `input` os_log category. On a headset nothing can be screenshotted —
+    `devicectl device capture screenshot` refuses on an Apple Vision Pro — so a
+    log line is the only witness there is.
+- Build: `scripts/build-visionos.sh --simulator` completed with
+  `** BUILD SUCCEEDED **`. The only compiler diagnostics anywhere in the lane are
+  the pre-existing `#pragma once in main file` on the bridging header and a
+  pre-existing upstream `-Wdelete-non-abstract-non-virtual-dtor` on
+  `LUS::ControllerDefaultMappings`, which surfaced only because this is the first
+  change that recompiles `ControlDeck.cpp`. The diff to that file is 45 insertions
+  and no deletions, and the warned construction is untouched context.
+- Device build: `scripts/build-visionos.sh --device` completed with
+  `** BUILD SUCCEEDED **` and passed `scripts/audit-visionos-app.sh` with
+  `REQUIRE_SIGNED=1`: arm64, signed, executable SHA-256
+  `693db554a08d4f930643a331ff27da5b8793e2b746ea046ff08bef5fea280671`, archive
+  content SHA-256 `5ab6f5d8898cfdc3e8806b985bf84ec34b2d2968f158ac2e84359e45ff8564a0`
+  (unchanged, and still ROM-free), controller database
+  `eb002773dc8a16aa96f9ee2609798e231a9deb60c45e21fbdd4e221c9e8b7d77`.
+- **Run, and the finding nobody expected: the Vision Pro Simulator has a
+  gamepad.** Installed and launched on the Apple Vision Pro Simulator running
+  visionOS 26.0 (`23M336`) with game data staged. The `input` category logged
+  `no game controller is connected` and then, 0.15 s later,
+  `1 game controller(s) connected: Gamepad` — reproduced across two separate
+  launches. So a device the Simulator itself provides was enumerated, recognised
+  as a game controller, opened by the control deck, and assigned to port 0. Before
+  this change that could not have happened at all. What the device *is* was not
+  established; SDL names it `Gamepad`, and the Simulator's own
+  `I/O › Input › Send Game Controller to Device` is **off**, so it is not a
+  forwarded Mac controller — there is none attached to this Mac.
+- **The Simulator cannot press it, and no first-input line was produced.**
+  `Send Keyboard Input to Device` was enabled and Return, Space and arrow keys
+  were sent to the Simulator window; `port … first input reached the game` never
+  appeared, and it should not have — the engine's keyboard path needs SDL video
+  events that do not exist here, and nothing maps those keys to that gamepad. So
+  this closes **the binding half only**. Whether input reaches the game is a
+  device claim and is not made here.
+- Sustained, as a regression check on a change that is in the per-frame event
+  path: 201 seconds in one process, 12,001 frames presented at 60 Hz, 11,986 of
+  them showing the engine, which finished 5,998; **all 12,001 drawables anchored
+  and none went without**, and **no error-level line** was logged by the app's
+  subsystem in the window.
+- **Two Simulator boundaries recorded below are now stale, and both were
+  environmental rather than technical.** Simulator.app **can** be opened on this
+  Mac — the Phase 4 entry says no window could be — and once it had a window the
+  Simulator's head **did** move, logging
+  `the wearer's head is at (-0.08, 0.00, 0.00) m` where every previous run
+  reported `(0.00, 0.00, 0.00)` unchanged. The head still only shifts with the
+  window's camera and this is **not** world-locking evidence; the substantive
+  boundary is unchanged, in that the first drawable still reports
+  `1 view(s), 1 texture(s), 0 rasterization rate map(s)` with a zero eye offset,
+  so **no Simulator result here is evidence of stereo**.
+- Maintained patches: `patches/libultraship-visionos.patch` is now 1,200 lines /
+  46,720 bytes, SHA-256
+  `b44a991b4f752b70093bafeab2c6ebf8a1cb443b792e2659702e41b70c4dcd1a`, having grown
+  by the two window-backend files and
+  `src/libultraship/controller/controldeck/ControlDeck.cpp`.
+  `patches/spaghettikart-visionos.patch` is **unchanged** at 437 lines / 18,428
+  bytes, SHA-256
+  `66154517ac8d6aebb6d4398b7dd22baad41398222825734af150be9cc0d1e39f` — nothing in
+  this phase needed a change to SpaghettiKart.
+- Replay: fresh clones at the exact pins
+  `5b28472d477bab101dee2a0f469fe2aee2c58a01` and
+  `f5c3843fe937320b64ff754fa6bf71b13ff5e7a1` accepted both patches in lane order,
+  passed reverse application and `git diff --check`, and produced all 30 patched
+  files — 22 libultraship and 8 SpaghettiKart — byte-identical to the working
+  trees. `scripts/check-repo-safety.sh` passes.
+- Boundary: this closes the **PS VR2 Sense half** of Phase 5's written gate and
+  **not** the rest of it. Unclaimed and untried: a **DualSense**, which has never
+  been connected to this app at all; port order across reconnects; multiplayer
+  port assignment; and rumble. Accessory tracking — the 6DoF pose a Sense
+  controller needs, and the only thing that would make them spatial controllers
+  rather than a gamepad — is still an explicit logged refusal, and remains the one
+  part of Phase 5 that needs code rather than a headset. ROM and texture-pack
+  import remain logged refusals. The toolchain is an Xcode beta.
+
+### 2026-08-01 — Apple Vision Pro, first hardware run: Phase 2's device half closes, Phase 3's runs six minutes, and the headset finds three bugs no Simulator could
+
+- Hardware: `NEW AVP`, Apple Vision Pro (`RealityDevice14,1`), visionOS 27.0
+  (`24M5326g`), Developer Mode enabled, connected to this Mac. Signed with team
+  `8653K5YW36` as `com.subtlepath.spaghettipad`; the audit passed with
+  `REQUIRE_SIGNED=1`, including the new ARKit/CompositorServices/Metal link
+  check. The owner wore the headset throughout and every observation below that
+  is not a log line is theirs.
+- **The headset's own topology, which is not what the Simulator reports.**
+  `compositor ready on Apple M2 GPU … foveation on`, and the first drawable gave
+  **2 views** with distinct eye offsets — the Simulator has never given more than
+  one view at the origin. Per-view viewports are 4493×3604.
+- **Phase 2's device half is closed.** With no game data in the container the
+  immersive space opened and drew the per-eye test pattern, and the wearer
+  confirmed what only a wearer can: the border is **amber in the left eye and
+  cyan in the right**, the identity ticks read **one square left, two right**,
+  and the white reticle sits at a **different horizontal position in each eye**.
+  Both eyes differ, which is the gate.
+- **Measured stereo separation: 68.4, 68.7, 68.8 and 70.7 mm** across four
+  sessions, from the two views' own transforms. The screen's centre lands at
+  0.642 and 0.361 across the two views — a disparity of 0.281 of a view width.
+  This is Phase 4's measurement, taken on hardware.
+- **World-locking is demonstrated, which no Simulator run can do.** Over one
+  374-second run the wearer's head moved and the screen's offset from it moved
+  with it: `(0.00, 0.06, -2.00)` → `(0.19, 0.24, -1.97)` → `(-0.08, 0.26, -1.96)`
+  → `(1.89, 0.21, -0.73)` metres. A head-locked screen reports the same triple
+  forever. The Simulator reported exactly that for eighteen minutes because its
+  head never moves.
+- **Phase 3's device half is closed at 6 minutes 15 seconds.** From `engine
+  thread entering the game loop` at 14:26:51.3 to the last sample at 14:33:06.0,
+  the compositor presented **33,601 frames at 89–90 Hz, 33,562 of them showing
+  the engine, which finished 11,192** (≈30 Hz). **All 33,601 drawables were
+  anchored and none went without.** No error-level line was logged by the app's
+  subsystem in the whole session. The run ended because this session terminated
+  the process to install another build, not because anything failed.
+
+  The gate as written asks for ten minutes. It ran six and a quarter, and the
+  owner accepted that as sufficient on 2026-08-01 after reviewing these numbers.
+  Recorded here rather than rounded up: nothing observed the remaining
+  three and three-quarter minutes, and the phase queue's requirement column
+  carries the same note.
+- **The warning that blocked everything is gone on hardware.** Across the
+  sessions above, `com.apple.CompositorNonUI` logged
+  `Presenting a drawable without a device anchor` **once**, in the milliseconds
+  between the wearer closing the immersive space and `layer renderer
+  invalidated` — ARKit pauses world tracking on close, the compositor then
+  refuses to anchor from a pose nothing vouches for, and the drawable is
+  correctly dropped. Every drawable of every live frame carried an anchor.
+- Three bugs came from the headset, and all three were invisible to eighteen
+  minutes of Simulator running:
+  - **The right eye was rasterized through the left eye's foveation.** The
+    device offered layouts `[0, 2]` and the app chose `layered`, which returned
+    `2 view(s), 1 texture(s), 1 rasterization rate map(s)`. Under that layout the
+    single map carries a layer per eye and the layer is chosen by a
+    `render_target_array_index` these shaders do not emit, so both passes used
+    layer 0. The wearer saw a uniform grid in the left eye and a warped one in
+    the right. The configuration now asks for `dedicated`, which returns
+    **2 views, 2 textures, 2 rate maps**, and the wearer confirms both eyes are
+    uniform. `EncodeViews` now logs an error if views ever outnumber rate maps
+    again. Fixing this inside `layered` needs vertex amplification in all four
+    shader programs, which buys nothing for a scene of one quad, a grid and a
+    gradient.
+  - **The eye-identity ticks were invisible because they were in a corner.** A
+    Vision Pro renders considerably more than it shows; at 8% across and 86% down
+    they fell outside the wearer's view entirely. Moved to 44%/68%, they are
+    visible. The Simulator shows the whole rendered view, so nothing about this
+    was observable there.
+  - **The sky did not render at all.** The wearer saw grid lines on a void. The
+    sky was a full-viewport triangle emitting clip coordinates directly, with its
+    ray reconstructed by unprojection; the floor, which is world geometry through
+    the same view projection, rendered perfectly throughout. Unprojecting at
+    mid-depth instead of at the far plane — an infinite far plane makes `w = 0`
+    there — changed nothing, so that theory was wrong or incomplete. The sky is
+    now a large box of ordinary world geometry, the same kind of object as the
+    floor, and the wearer confirms **the sky is visible**. The room's brightness
+    was raised roughly threefold at the same time: the values before it had been
+    judged from a Simulator screenshot, which is a poor instrument for what a
+    headset shows, and the wearer's first report of that room was that there was
+    no sky at all.
+- **The floor is in the wrong place and the rule that puts it there is still a
+  guess.** The headset reports the wearer's head **0.93 m above the ARKit world
+  origin**; the Simulator reports 0.00. The rule became "treat an origin well
+  below the head as the ground", which the log states explicitly along with the
+  measurement. The wearer — seated — reports that the rendered floor is
+  **higher than the real floor of the room they are sitting in**, so that origin
+  is not the ground either. Nothing in this lane measures the real floor; doing
+  so needs ARKit plane detection, which requires world-sensing authorization and
+  returns nothing on the Simulator.
+- **Comfort: the wearer reports the session was comfortable.** That covers six
+  minutes of the game's attract loop on a world-locked screen, not a race —
+  no race can be driven, because there is no input. Phase 4's gate asks for a
+  comfortable *full race*, so that element remains open on Phase 5 rather than
+  on anything in this phase.
+- **Audio works, and the ledger was wrong to say otherwise.** The wearer reports
+  hearing the game's audio on device and describes it as perfect. Earlier
+  entries state "there is no audio" on the strength of `MA_NO_DEVICE_IO` being
+  defined; that flag disables **miniaudio's** device I/O only, and SDL's
+  CoreAudio driver is compiled into this lane — the generated `SDL_config.h`
+  carries `SDL_AUDIO_DRIVER_COREAUDIO 1`, and the maintained libultraship patch
+  touches `SDLAudioPlayer` precisely because that is the path in use. What was
+  true is that **nobody had ever listened**; the claim was an untested assumption
+  carried forward, and it is corrected here rather than in the dated entries
+  below, which preserve what was known when they were written.
+- **No controller works, and none can.** The wearer's PS VR2 Sense controller
+  does nothing: `SpaghettiPad_InputInit`, `SpaghettiPad_AttachAccessoryTracking`
+  and the motion-steering entry points are all explicit logged refusals. What
+  ran for six minutes was the game's own attract loop. The ARKit session that
+  accessory tracking must join is now live and reachable through
+  `SpaghettiPad_ARSession()`, which is the part Phase 5 needed from this phase.
+- Builds used: signed device executables `2565234c…` (first install),
+  `7ad3ba8d…` (dedicated layout, ticks moved, floor rule), `e75d4acd…`
+  (mid-depth sky unprojection, ineffective) and `0bce283a…` (sky as world
+  geometry, the build the wearer confirmed). The maintained patches are
+  **unchanged** by all of this — every file edited is repo-owned under
+  `visionos/` — and the Simulator lane still builds from the same source, with
+  Release arm64 xrsimulator executable SHA-256
+  `102f2c2b54560a576a652122ad39d9b0b2c6d43383d8585ac804a1fdaf9d12fc`.
+- Not re-run after these fixes: the Simulator evidence in the entry below was
+  captured before the dedicated-layout, tick, floor and sky changes, so its
+  captures show the older room. The Simulator cannot exercise any of the four.
+
+### 2026-08-01 — visionOS Phase 4, first half: every drawable carries an ARKit device anchor, and the picture it shows is fixed in a room
+
+- Toolchain: Xcode 27.0 beta (`27A5218g`), XRSimulator 27.0 SDK, CMake 4.4.2
+  under the Xcode generator. arm64, visionOS 26.0 deployment target, Release.
+- The shape of the problem: Phase 3 recorded that `com.apple.CompositorNonUI`
+  logged `Presenting a drawable without a device anchor. On device this drawable
+  won't be presented.` on every frame. That is the whole of what blocked the
+  device halves of Phases 2 and 3, and it is now fixed and measured, not
+  reasoned about — see the count below.
+- What was added:
+  - `visionos/SpaghettiPadWorldTracking.h` and `…mm` are new and repo-owned: the
+    app's single `ar_session_t`, one `ar_world_tracking_provider_t`, and the
+    per-frame pose query. The session is deliberately never stopped — stopping
+    it when the wearer closes the immersive space would reset the world origin
+    under a game they left running — and `SpaghettiPad_ARSession()` hands it to
+    Phase 5, because ARKit permits exactly one session per app.
+  - `visionos/SpaghettiPadCompositor.mm` queries that pose for each drawable and
+    calls `cp_drawable_set_device_anchor` before encoding a single view.
+  - The screen became an object in a room rather than a fixed distance ahead of
+    the eyes: its place is computed once, from the first fully tracked pose, as
+    2.00 m along the wearer's own horizontal gaze at their own height, upright.
+    Pitch and roll are dropped, so a screen placed while glancing at the floor
+    is still level.
+  - An immersive environment, which is the other half of what Phase 4 is for: a
+    graded sky and a floor grid, both world-locked and both dim enough that the
+    game stays the brightest thing in the space. A fully immersive space with
+    nothing in it but a screen gives head motion nothing to register against,
+    and that is a comfort problem rather than a decoration one.
+  - `ARKit` on the link line in the maintained SpaghettiKart patch, and a new
+    check in `scripts/audit-visionos-app.sh` that the built app links ARKit,
+    CompositorServices and Metal. Losing ARKit is the one regression a Simulator
+    run cannot catch: the app would still build and still render here, and a
+    headset would drop every frame it presented.
+- Five findings came from the SDK and from running, not from the plan:
+  - **The plan named the wrong clock.** The active gate recorded here said to
+    query at `cp_frame_timing_get_trackable_anchor_time`. The header for that
+    function says otherwise in its own note — *"For predicting ARKit device
+    anchor use presentation time"* — and trackable anchor time is for
+    registering content against real-world objects. The compositor queries
+    `cp_frame_timing_get_presentation_time` of the drawable's own timing.
+  - **`cp_view_get_transform` is device-from-view, not world-from-view.** Its
+    documentation is explicit: it is where an eye sits relative to the head.
+    Composing it with the anchor's `origin_from_anchor` transform is what makes
+    a world-locked screen possible, and until an anchor existed the omission was
+    invisible, because device space *was* the world.
+  - **World tracking needs no authorization here, so no usage-description string
+    was added.** `ar_world_tracking_provider_get_required_authorization_type()`
+    was called rather than guessed at, and logs `required authorization none`.
+  - **The world origin is not the floor.** The first version drew the floor at
+    the origin's height, assuming visionOS puts that origin on the ground. The
+    check written alongside it reported `the head is 0.00 m above the world
+    origin`, so the origin is where the head was when tracking started and that
+    floor would have been at eye level. The floor is now a nominal 1.50 m below
+    the head, and the log says in the same line that this is not a floor
+    measurement. Measuring the real floor needs plane detection, which requires
+    world-sensing authorization and returns nothing on the Simulator.
+  - **The room's colours are linear values, not display values.** The drawable
+    is `bgra8Unorm_srgb` and encodes on write, so the first version's sky and
+    grid — numbers chosen to look like dim greys — arrived about three times too
+    bright. This was visible in a capture and invisible in the code.
+  - A sixth, smaller one: the compositor creates a **fresh `ar_device_anchor_t`
+    per query** rather than reusing one, which is what Apple's C example does.
+    The compositor reads the anchor it was handed when it presents, which is
+    after the next frame has been drawn, so a single reused object would have
+    the following frame's prediction in it by then.
+- Build: `scripts/build-visionos.sh --simulator` completed with
+  `** BUILD SUCCEEDED **`; the Release arm64 xrsimulator executable SHA-256 is
+  `f8d225bb9fd90f79e22982469e459034e29e80101ab08a69a8fb1e4e0cec169d`. When every
+  shell source was recompiled, the only compiler diagnostic for any file under
+  `visionos/` was the pre-existing `#pragma once in main file` warning on the
+  bridging header; the two new files add none.
+- Device build: `scripts/build-visionos.sh --device` completed with
+  `** BUILD SUCCEEDED **` and passes the audit, which now includes the framework
+  check: arm64, unsigned, executable SHA-256
+  `41d82ababe6c81d61f15038eb01defd1959c1eb2d0a3532693b70f8e9c638453`, archive
+  content SHA-256
+  `5ab6f5d8898cfdc3e8806b985bf84ec34b2d2968f158ac2e84359e45ff8564a0`, controller
+  database `eb002773dc8a16aa96f9ee2609798e231a9deb60c45e21fbdd4e221c9e8b7d77`.
+  `xcrun vtool -show-build` reports `platform VISIONOS`, `minos 26.0`; `otool -L`
+  shows `ARKit`, `CompositorServices`, `Metal` and `_CompositorServices_SwiftUI`.
+  **It has not been run** — see the hardware note below. `strings` finds
+  `SPAGHETTIPAD_AUTO_OPEN_IMMERSIVE_SPACE` once in the xrsimulator executable and
+  not at all in the xros one.
+- **The measurement that matters, as a before and after on the same Simulator.**
+  In a ten-minute window of the previous build, `com.apple.CompositorNonUI`
+  logged `Presenting a drawable without a device anchor` **17,363 times**. In the
+  whole of this build's 18-minute run it logged **nothing at all** — not that
+  message, not any message.
+- Run: installed and launched on the Apple Vision Pro Simulator running visionOS
+  26.0 (`23M336`). `world tracking running: required authorization none, provider
+  running`, then `device anchor tracked at compositor frame 1`, then `room
+  placed: a 1.60 m screen centred (0.00, 0.00, -2.00) m, 2.00 m ahead of the
+  wearer` — all before the first frame was presented.
+- **Sustained: 1,100 seconds — eighteen minutes — in one process, no restart.**
+  The compositor presented 66,001 frames (59.998 Hz), 65,986 of them showing the
+  engine, which finished 32,969 (29.97 Hz). **Every one of those 66,001 drawables
+  carried a device anchor and none went without**, which the compositor counts
+  separately for exactly this reason. Not one error-level line was logged by the
+  app's subsystem in the whole window — the categories that spoke were `shell`,
+  `compositor`, `surface` and the new `tracking` — and the ring never reported
+  waiting for a free surface.
+  The two evidence captures are 3,840×2,160 stills taken three seconds apart:
+  `docs/screenshots/visionos-immersive-room.png` (SHA-256
+  `353f5b514c259b5bd2cab074e45822002125b78d6209071c950238d7034bb4a5`) and
+  `…-advanced.png` (SHA-256
+  `6267671e1a30cd2ed25099190f416f27ccfd32abff28c7925b1b198774ae8d80`) show the
+  Kalimari Desert attract demo at two different moments on a screen that has not
+  moved, inside the graded room.
+- The close-and-reopen path was exercised with the engine running, and it tests
+  something new now. One `cycle` run logged the engine thread starting **once**
+  and `world tracking running` **once**; the first compositor reported `layer
+  renderer invalidated after 120 frames`; a second compositor came up on a
+  different thread, immediately logged `engine frame 55`, anchored its own frame
+  1, and placed the room again. So the ARKit session outlived the immersive
+  space while the room did not — which is the intended split: reopening puts the
+  screen back in front of the wearer wherever they have gone, without restarting
+  the game or the session.
+- Maintained patches: `patches/spaghettikart-visionos.patch` is now 437 lines /
+  18,428 bytes, SHA-256
+  `66154517ac8d6aebb6d4398b7dd22baad41398222825734af150be9cc0d1e39f`;
+  `patches/libultraship-visionos.patch` is **unchanged** at 1,056 lines / 39,826
+  bytes, SHA-256
+  `da4950549fb5d05bac8b1185f85f646f62d26b70d0b87ee19093037670f2d60a`. Nothing in
+  this phase needed a change to the engine.
+- Replay: fresh clones at the exact pins
+  `5b28472d477bab101dee2a0f469fe2aee2c58a01` and
+  `f5c3843fe937320b64ff754fa6bf71b13ff5e7a1` accepted both patches in lane order,
+  passed reverse application and `git diff --check`, and produced all 29 patched
+  files — 21 libultraship and 8 SpaghettiKart — byte-identical to the working
+  trees. `scripts/apply-patches.sh --lane visionos` recognises the applied stack,
+  and `scripts/check-repo-safety.sh` passes.
+- **Hardware, corrected.** Earlier entries said no Apple Vision Pro is attached
+  to this Mac. More precisely: one **is paired** — `NEW AVP`, visionOS 27.0,
+  Developer Mode enabled, last connected 2026-07-25 — but it is not reachable.
+  `devicectl` reports its tunnel `unavailable`, and a live query fails with
+  `com.apple.dt.CoreDeviceError error 4016`. Nothing was run on it, and no device
+  claim is made anywhere in this entry.
+- Boundary: this closes **none** of Phase 4's own gate, which is a measured
+  on-device stereo separation and a comfortable full race. What it does is
+  remove the reason the device halves of Phases 2 and 3 could not be attempted,
+  and take the measurement Phase 4 needs so that closing it becomes a matter of
+  reading a log on hardware. In particular:
+  - **World-locking is not demonstrated here and cannot be.** The Simulator's
+    head never moves: it logged `the wearer's head is at (0.00, 0.00, 0.00) m and
+    the screen is (0.00, 0.00, -2.00) m from it` unchanged for eighteen minutes,
+    and a head-locked screen would log exactly the same thing. The Simulator was
+    also driven headless, and no Simulator.app window could be opened on this Mac
+    to move its camera. That periodic line is the check a headset settles in
+    seconds.
+  - **Stereo remains unmeasured.** The Simulator's first drawable still reports
+    `1 view(s), 1 texture(s), 0 rasterization rate map(s)` with `eye offset
+    (0.0000, 0.0000, 0.0000) m`, and the compositor refuses to report a
+    separation rather than reporting zero: `stereo separation is not measurable
+    here: this drawable reports 1 view(s)`.
+  - Comfort, foveation and the layered layout are untouched and untested. There
+    is still **no audio** and **no input**: the game ran its own attract loop for
+    the whole eighteen minutes and no button has ever been pressed. ROM import,
+    texture-pack import and every input entry point remain logged refusals. The
+    toolchain is an Xcode beta.
+
+### 2026-08-01 — visionOS Phase 3, Simulator half: the engine runs on the compositor and its title screen holds a floating screen for twelve minutes
+
+- Toolchain: Xcode 27.0 beta (`27A5218g`), XRSimulator 27.0 SDK, CMake 4.4.2
+  under the Xcode generator. arm64, visionOS 26.0 deployment target, Release.
+- The shape of the problem: `SDL_VIDEO` is off on visionOS, so libultraship's
+  Fast3D Metal backend has no `SDL_Renderer`, no `CAMetalLayer`, and therefore
+  no `-nextDrawable` to render into. Everything below follows from replacing
+  that one call, and only that one call, with a surface the shell owns.
+- What was added:
+  - `include/fast/backends/gfx_visionos.h` and
+    `src/fast/backends/gfx_visionos.cpp` are new in libultraship:
+    `GfxWindowBackendVisionOS`, which answers the questions the SDL2 backend
+    still owed the engine once the window was gone — dimensions, frame pacing,
+    running state — and answers the desktop-only ones (fullscreen, cursor,
+    mouse capture) honestly rather than by faking a window. The header also
+    declares the C contract the shell implements. It is deliberately **not**
+    weak: an engine that cannot reach its surface must fail to link, not render
+    into nothing.
+  - `visionos/SpaghettiPadRenderSurface.mm` is new and repo-owned: a ring of
+    three 1920×1080 textures, one acquired per engine frame, published to the
+    compositor when the GPU is finished with it.
+  - `visionos/SpaghettiPadCompositor.mm` draws the latest published frame on a
+    flat screen 1.6 m wide, 2 m ahead. The frame lifecycle, per-view render
+    passes, layout handling and present around it are unchanged from Phase 2;
+    what the engine added is one branch inside the encoder.
+  - `SpaghettiPad_StartEngine` is live: a detached pthread with a 16 MiB stack
+    calling upstream's renamed `main`.
+- Correctness decisions that are not obvious from the code:
+  - **Ordering between the two Metal queues is by completion, not by hope.** A
+    texture is published only from its command buffer's `addCompletedHandler`,
+    and returned to the ring only from the compositor's. Nothing samples a
+    texture that is still being written, without an `MTLEvent` anywhere.
+  - **The ring textures are `BGRA8Unorm` with an `_sRGB` texture view.** The
+    engine's shaders write display-encoded values, exactly as they do into the
+    `BGRA8Unorm` `CAMetalLayer` on every other platform; the compositor's
+    drawable is `bgra8Unorm_srgb` and re-encodes on write. Sampling through the
+    view is the decode that makes the round trip exact. Sampling the raw
+    texture would have brightened every frame.
+  - **Three buffers, not two.** With one published and one possibly in flight
+    on the compositor, two would make the engine wait on the compositor every
+    frame.
+- Three findings came from building and running rather than from inspection:
+  - **`SDL_main.h` renames `main` on visionOS.** `TARGET_OS_IPHONE` holds
+    there, so SDL defines `SDL_MAIN_NEEDED` and then `#define main SDL_main` —
+    which won over the maintained `main=SpaghettiPad_GameMain` and produced an
+    `SDL_main` nothing called. `nm` on `Game.o` showed `_SDL_main` and no
+    `_SpaghettiPad_GameMain`. The app now defines `SDL_MAIN_HANDLED`, which is
+    exactly what it means, and the engine thread calls `SDL_SetMainReady()`
+    before the game loop because SDL then refuses to initialise any subsystem
+    until it is told the entry point has run.
+  - **SDL 2.32.10 has no visionOS branch for HIDAPI.**
+    `cmake/sdlchecks.cmake` picks a platform backend under `if(IOS OR TVOS)`,
+    so visionOS compiled `SDL_hidapi.c` with nothing behind it and the app
+    failed to link on seventeen `PLATFORM_hid_*` symbols. `SDL_HIDAPI` is now
+    off for this lane. The generated `SDL_config.h` was read back rather than
+    assumed: `SDL_HIDAPI_DISABLED` and `SDL_JOYSTICK_HIDAPI` off,
+    `SDL_JOYSTICK_MFI` **on**, `SDL_AUDIO_DRIVER_COREAUDIO` on. SDL declares
+    `SDL_VIRTUAL_JOYSTICK` dependent on `SDL_HIDAPI`, so
+    `SDL_JOYSTICK_VIRTUAL` went off with it; the stale claim that this lane
+    kept it has been corrected in the maintained patch. Nothing needs it yet.
+  - **Reporting the engine's own pace as the display's rate is a feedback
+    loop.** Upstream derives its interpolation target from
+    `GetCurrentRefreshRate()` and then calls `SetTargetFps` with the result, so
+    a backend answering with `mTargetFps` answers with its own previous answer
+    — harmless while the two agree, and permanently stuck at the lower of them
+    the moment a user raises the interpolation setting. The compositor now
+    measures its own presentation rate over each 600-frame window and the
+    backend reports that.
+- Build: `scripts/build-visionos.sh --simulator` completed with
+  `** BUILD SUCCEEDED **`. The Release arm64 xrsimulator executable SHA-256 is
+  `078519c009776ba3256a6971307cc47715cfea89a61c5d8b0891a2989d27ca7e`;
+  `xcrun vtool -show-build` reports `platform VISIONOSSIMULATOR`, `minos 26.0`.
+  The only compiler diagnostic for any file under `visionos/` or for the two
+  new libultraship files is the pre-existing `#pragma once in main file`
+  warning on the bridging header.
+- Device build: `scripts/build-visionos.sh --device` completed with
+  `** BUILD SUCCEEDED **` and the app passes `scripts/audit-visionos-app.sh`:
+  arm64, unsigned, executable SHA-256
+  `75d2ab5db9a978eb45ec009507cf5c04b191132722103199d06b457c10a5be4b`, archive
+  content SHA-256
+  `5ab6f5d8898cfdc3e8806b985bf84ec34b2d2968f158ac2e84359e45ff8564a0`,
+  controller database
+  `eb002773dc8a16aa96f9ee2609798e231a9deb60c45e21fbdd4e221c9e8b7d77`.
+  `xcrun vtool -show-build` reports `platform VISIONOS`, `minos 26.0`, and
+  `otool -L` shows `CompositorServices`, `Metal` and
+  `_CompositorServices_SwiftUI`. **It has not been run:** no Apple Vision Pro
+  is attached to this Mac. `strings` finds
+  `SPAGHETTIPAD_AUTO_OPEN_IMMERSIVE_SPACE` once in the xrsimulator executable
+  and not at all in the xros one.
+- Game data: a local `mk64.o2r` was generated with the pinned Torch from the
+  owner's own Mario Kart 64 (US) ROM, SHA-1
+  `579c48e211ae952530ffc8738709f078d5dd215e`, in a disposable copy of the
+  source tree so no generated header or asset touched the working checkout. It
+  was staged into the Simulator container. **It is not in this repository and
+  never will be**, and neither is the ROM.
+- Run: installed and launched on the Apple Vision Pro Simulator running
+  visionOS 26.0 (`23M336`). The engine thread logged `entering the game loop`,
+  the surface logged `render surface ready … 1920 x 1080, 3 buffers`, and the
+  compositor logged `showing the engine on a 1.60 m screen 2.00 m ahead, from a
+  1920 x 1080 frame (engine frame 1, compositor frame 17)` 0.33 seconds after
+  the engine thread entered the game loop — the whole of `GameEngine::Create`,
+  the 26 MB game archive, and the first rendered frame.
+- **Sustained: 730.0 seconds — twelve minutes — in one process, no restart.**
+  The compositor presented 43,801 frames (59.998 Hz, and it measured itself at
+  60 Hz), 43,785 of them showing the engine, which finished 21,894 frames
+  (29.99 Hz). No error was logged by any of the app's four log categories, and
+  the ring never once reported waiting for a free surface. The two evidence
+  captures are 3,840×2,160 stills taken three seconds apart **twelve minutes
+  into that run**: `docs/screenshots/visionos-immersive-title-screen.png`
+  (SHA-256
+  `0bcf4cba04d10fa317718ccfccd36a47edf5964de27dd398ac8e82bfc9bf5364`) shows
+  the Mario Kart 64 title mid-fade with `PUSH START BUTTON` legible, and
+  `…-advanced.png` (SHA-256
+  `f44969dac2594669d17c6fa250486b7c08a583457b16c24201c1bf4de0ff5d22`) shows it
+  fully faded in three seconds later. Two stills that disagree are what
+  separates a running engine from one stalled frame left on a screen.
+- The engine runs at 30 Hz **because upstream asks it to**, not because the
+  path cannot do more: `gInterpolationFPS` defaults to 30 and
+  `GetInterpolationFPS()` takes the smaller of that and the display rate. This
+  was measured rather than reasoned about — with the console variable set to
+  60 the engine finished 600 frames per ten-second interval against the
+  compositor's 600, a 1:1 match at 60 Hz. The variable was returned to its
+  default afterwards. Whether 30 or 60 is the right default in a headset is a
+  comfort question, and comfort is a device measurement.
+- The close-and-reopen path was exercised with the engine running, which is a
+  different test from Phase 2's. One `cycle` run logged the engine thread
+  starting **once**; the first compositor thread reported `layer renderer
+  invalidated after 122 frames`; a second compositor came up **on a different
+  thread** and immediately logged `engine frame 55`, not frame 1. The engine
+  kept its place rather than restarting the game, and its counter did not run
+  on through the closed second — the surface reports itself live only while a
+  compositor is consuming, and the game loop idles otherwise.
+- Runtime side effects, not just return values: the container gained
+  `spaghettify.cfg.json`, `imgui.ini`, `default.sav`,
+  `controllerPak_header.sav` and `logs/`, so the engine reached and used its
+  own storage rather than merely rendering.
+- Maintained patches: `patches/libultraship-visionos.patch` is now 1,056 lines
+  / 39,826 bytes, SHA-256
+  `da4950549fb5d05bac8b1185f85f646f62d26b70d0b87ee19093037670f2d60a`;
+  `patches/spaghettikart-visionos.patch` is 433 lines / 18,168 bytes, SHA-256
+  `34dc7e0d304d452f0e4eba7892104d044ed7546a58a977cb0185c24a7bf8d9dc`.
+- Replay: fresh clones at the exact pins
+  `5b28472d477bab101dee2a0f469fe2aee2c58a01` and
+  `f5c3843fe937320b64ff754fa6bf71b13ff5e7a1` accepted both patches in lane
+  order, passed reverse application and `git diff --check`, and produced all 29
+  patched files — 21 libultraship and 8 SpaghettiKart, including the two new
+  files — byte-identical to the working trees.
+  `scripts/apply-patches.sh --lane visionos` recognises the applied stack, and
+  `scripts/check-repo-safety.sh` passes.
+- **The finding that changes the plan: every drawable so far has been presented
+  without a device anchor.** `com.apple.CompositorNonUI` logs `Presenting a
+  drawable without a device anchor. On device this drawable won't be presented.`
+  on every frame. The compositor has never called
+  `cp_drawable_set_device_anchor`, because ARKit world tracking was scheduled
+  for Phase 4 — but the consequence is stronger than "head-locked": on real
+  hardware the frame is **dropped**, not misplaced. So the device halves of
+  Phase 2 and Phase 3 are both blocked on Phase 4's first task, and the Phase 2
+  expectation that attaching a headset would show the amber and cyan borders
+  was wrong. This is recorded rather than fixed: an ARKit path written here
+  could not be verified here, and an unverified fix is not evidence.
+- Boundary: this closes the Simulator half of Phase 3 and **nothing about
+  stereo, immersion, comfort, foveation, or the layered layout**. The
+  Simulator's first-drawable log still reads `1 view(s), 1 texture(s), 0
+  rasterization rate map(s)` with `eye offset (0.0000, 0.0000, 0.0000) m`, so
+  there was one eye at the origin; both eyes would in any case receive the same
+  flat picture, since a screen is not a stereoscopic scene. There is **no
+  audio**: `MA_NO_DEVICE_IO` is defined and the SDL audio path is unexercised
+  on visionOS. There is **no input**: nothing is wired to a controller, the
+  game ran its own attract loop for the whole twelve minutes, and no button has
+  ever been pressed. ROM import, texture-pack import and every input entry
+  point remain logged refusals. The toolchain is an Xcode beta.
+
+### 2026-08-01 — visionOS Phase 2, Simulator half: an immersive space opens and renders a test pattern
+
+- Toolchain: Xcode 27.0 beta (`27A5218g`), XRSimulator 27.0 SDK, CMake 4.4.2
+  under the Xcode generator. arm64, visionOS 26.0 deployment target, Release.
+- What was added:
+  - `visionos/SpaghettiPadApp.swift` gains an `ImmersiveSpace` whose only
+    content is a `CompositorLayer`, an `.immersionStyle` of `.full`, and a
+    launch-window button that opens and dismisses it. Its configuration
+    provider reads capabilities rather than assuming them.
+  - `visionos/SpaghettiPadCompositor.mm` is new: the compositor thread, the
+    frame lifecycle, the Metal pipeline, and the test pattern.
+  - `visionos/SpaghettiPadBridge.h` gains `SpaghettiPad_StartCompositor` and
+    `SpaghettiPad_StopCompositor`. `SpaghettiPad_StartEngine` lost its layer
+    renderer argument: the compositor and the game thread have different
+    lifetimes, since the compositor runs whenever the space is open while the
+    engine can only run once game data exists. It remains a logged refusal.
+  - The maintained SpaghettiKart patch compiles the new file and names
+    `CompositorServices` and `Metal` on the link line rather than inheriting
+    Metal from libultraship by luck.
+- Deprecated API avoided rather than inherited: `cp_frame_query_drawable` is
+  deprecated as of visionOS 26.0, so the loop uses `cp_frame_query_drawables`
+  and walks the returned array; `cp_view_get_tangents` has been deprecated
+  since visionOS 2.0, so the reticle is placed with
+  `cp_drawable_compute_projection`.
+- The test pattern is not a hardcoded left/right image. Its reticle is one
+  world point 0.6 m ahead, projected through each view's own projection and
+  transform, so the eyes differ because the compositor's geometry says they
+  differ; a pattern that faked the difference could not tell a working stereo
+  path from a broken one. The border colour (amber/cyan) and a tick run one
+  longer per view identify which eye a capture came from even without colour.
+  A sweep bar advances with the frame index, so two stills taken moments apart
+  disagree about where it is.
+- Two findings came from building and running rather than from inspection:
+  - **The Vision Pro Simulator does not offer the layered layout.** The active
+    gate expected `.layered`. With foveation unsupported there,
+    `supportedLayouts(options: [])` returned `[0, 1]` — dedicated and shared —
+    so the configuration fell back to `.dedicated`. The renderer walks whatever
+    texture index, slice and viewport each view reports and clears a
+    destination only on its first pass, so all three layouts are handled by
+    construction — but only `.dedicated` has been run. The layered path is
+    **unexercised** and remains a device claim. What was offered and what was
+    chosen are both logged rather than assumed.
+  - **Coplanar geometry needs `GreaterEqual`, not `Greater`.** visionOS is
+    reverse-Z, and a strict depth comparison rejected every pattern rectangle
+    after the first at the same depth, so the earliest draw won instead of the
+    latest and the sweep bar punched a hole through the reticle. This was
+    visible in a capture and invisible in the code.
+- Build: `scripts/build-visionos.sh --simulator` completed with
+  `** BUILD SUCCEEDED **`. The Release arm64 xrsimulator executable SHA-256 is
+  `ce145a5f41589f89331b75b9f5f2dd91b9304a5f85c2b41692de695e2d319d1c`;
+  `xcrun vtool -show-build` reports `platform VISIONOSSIMULATOR`, `minos 26.0`.
+  The only compiler diagnostic for any file under `visionos/` is the
+  pre-existing `#pragma once in main file` warning on the bridging header; the
+  new sources add none.
+- A device build now exists. Phase 1 produced none and left
+  `scripts/audit-visionos-app.sh` unexercised; `scripts/build-visionos.sh
+  --device` now completes with `** BUILD SUCCEEDED **` and the app **passes
+  that audit**: arm64, unsigned, archive content SHA-256
+  `5ab6f5d8898cfdc3e8806b985bf84ec34b2d2968f158ac2e84359e45ff8564a0`, and
+  controller database
+  `eb002773dc8a16aa96f9ee2609798e231a9deb60c45e21fbdd4e221c9e8b7d77`.
+  `xcrun vtool -show-build` reports `platform VISIONOS`, `minos 26.0`; the
+  executable SHA-256 is
+  `53858c578a5c585b9b1461be273a14c181b4ae6d13555bf1e2bf2577c635cec2`, and
+  `otool -L` shows `CompositorServices`, `Metal` and
+  `_CompositorServices_SwiftUI` linked. This proves the compositor compiles and
+  links against the real `xros` SDK. **It has not been run:** no Apple Vision
+  Pro is attached to this Mac.
+- The Simulator hook's exclusion from device builds was checked rather than
+  assumed: `strings` finds `SPAGHETTIPAD_AUTO_OPEN_IMMERSIVE_SPACE` in the
+  xrsimulator executable and finds no occurrence of it in the xros one.
+- Run: installed and launched on the Apple Vision Pro Simulator running
+  visionOS 26.0 (`23M336`). The app logged `openImmersiveSpace returned
+  opened`, then `compositor ready on Apple xrOS simulator GPU: layout 0,
+  colour format 81, depth format 252, foveation off` — that is
+  `BGRA8Unorm_sRGB` and `Depth32Float`, the two formats the configuration
+  asked for.
+- Live rather than a single frame: the loop reported `compositor is live` every
+  600 frames at ten-second intervals, so a sustained 60 Hz, and ran past 7,200
+  frames in one sitting. `docs/screenshots/visionos-immersive-test-pattern.png`
+  and `…-advanced.png` are 3840×2160 captures two seconds apart in which the
+  sweep bar has visibly moved, with SHA-256
+  `196badccdbaf7da172319ceecd3671b93ae2312c85f767aa6f5e3e506b0e243a` and
+  `52f2800e9508f6d60c2090e0445531aa5cebe42df980ed3055ffdeec04bc6b85`.
+- The close and reopen path was exercised, not merely reasoned about. A cycling
+  run logged `layer renderer invalidated after 120 frames`, then `immersive
+  space dismissed`, then a second `openImmersiveSpace returned opened` and a
+  second `compositor ready` **on a different thread**, which is what proves the
+  first render thread noticed its renderer go invalid, was joined, and did not
+  block or leak into the next open. The evidence captures above come from that
+  third open.
+- Driving a headless device: the Simulator here runs with no Simulator.app
+  window, so there is no button to press.
+  `SPAGHETTIPAD_AUTO_OPEN_IMMERSIVE_SPACE` opens the space at launch (`1`) or
+  opens, closes and reopens it (`cycle`), and then dismisses the launch window
+  so a capture shows what the compositor drew rather than a window and a
+  container path. It is inside `#if targetEnvironment(simulator)`, so it is
+  compiled out of every device build, and it is inert unless set. No release
+  behaviour is attached to it.
+- Maintained patches: `patches/libultraship-visionos.patch` is unchanged at 472
+  lines / 16,811 bytes, SHA-256
+  `6f048b7662def878da776a60c15ffea6bd186f5a7e3008334d38d414d6a503e3`;
+  `patches/spaghettikart-visionos.patch` is now 413 lines / 16,770 bytes,
+  SHA-256
+  `2a4d0b47180ca8da47a0bf15db2b93d5ed800dba86d16de3bea0eea2c9520566`.
+- Replay: fresh clones at the exact pins
+  `5b28472d477bab101dee2a0f469fe2aee2c58a01` and
+  `f5c3843fe937320b64ff754fa6bf71b13ff5e7a1` accepted both patches in lane
+  order, passed reverse application and `git diff --check`, and produced all 8
+  SpaghettiKart and 17 libultraship patched files byte-identical to the working
+  trees, so the patches still capture the whole change.
+- `scripts/check-repo-safety.sh` passes. It was failing before this work: the
+  Phase 1 entry below recorded the Simulator's device UUID, which the script
+  rejects in public documentation. That line has been corrected.
+- Boundary: this closes items 1 and 2 of Phase 2 and **nothing about stereo**.
+  The Simulator's first-drawable log reads `1 view(s), 1 texture(s), 0
+  rasterization rate map(s)` with `eye offset (0.0000, 0.0000, 0.0000) m`, so
+  there was one eye, at the origin, and the reticle's per-eye disparity was
+  exercised only in its degenerate single-view case. Foveation was off and no
+  rasterization rate map existed, so that path is unexercised too. No ARKit
+  device anchor is set, so the pattern is head-locked and nothing here speaks
+  to reprojection, immersion or comfort. This renders a test pattern, not game
+  content: `SpaghettiPad_GameMain` is still never called, and the engine,
+  import and input entry points remain logged refusals. The toolchain is an
+  Xcode beta.
+
+### 2026-08-01 — visionOS Phase 1 closed: the app configures, links, and launches
+
+- Toolchain: Xcode 27.0 beta (`27A5218g`), XRSimulator 27.0 SDK, CMake 4.4.2
+  under the Xcode generator. The target is arm64 with a visionOS 26.0
+  deployment target, built Release.
+- Two real blockers were found by building rather than by inspection, and both
+  are now carried in the maintained visionOS patch:
+  - **SDL misc subsystem.** SDL2's iOS `SDL_OpenURL` backend calls
+    `-[UIApplication openURL:]`, which is `API_UNAVAILABLE(visionos)`, so
+    `src/misc/ios/SDL_sysurl.m` could not compile. Setting `SDL_MISC OFF`
+    selects SDL's own dummy backend (`if(NOT HAVE_SDL_MISC)` in SDL2's
+    `CMakeLists.txt`), so `SDL_OpenURL` still links and returns
+    `SDL_Unsupported()` rather than disappearing. Its single caller is
+    upstream's desktop "Open App Files Folder" button in
+    `src/port/ui/PortMenu.cpp`, which has no folder to open on visionOS.
+  - **C-family flags reaching swiftc.** `cmake/SetFlags.cmake` set
+    `-Wall -Wextra -Wno-error -Wno-missing-field-initializers -Wno-parentheses
+    -Wno-missing-braces -ffast-math -pipe` and `-pthread` through a
+    language-agnostic `target_compile_options()`. In a mixed Swift/C/C++/
+    Objective-C++ target CMake copied them into `OTHER_SWIFT_FLAGS`, and the
+    Swift driver hard-errors on the first flag it does not recognise
+    (`Driver threw unknown argument: '-Wall'`). Each C-family option is now
+    scoped with `$<COMPILE_LANGUAGE:C,CXX,OBJCXX>`. The generated project was
+    re-read to confirm the fix rather than assumed: `OTHER_CFLAGS` and
+    `OTHER_CPLUSPLUSFLAGS` still carry the complete warning set, while
+    `OTHER_SWIFT_FLAGS` retains only Swift's own `-Osize`/`-Onone`, which CMake
+    maps per language. The `-fno-lto` Debug option was scoped the same way.
+- Build: `scripts/build-visionos.sh --simulator` completed with
+  `** BUILD SUCCEEDED **`. The Release arm64 xrsimulator executable SHA-256 is
+  `6c9f0b4251839498d7e51bb5e3c73201f28b50b452ce858091cf2891d87186ad`.
+- Bundle: `xcrun vtool -show-build` reports `platform VISIONOSSIMULATOR`,
+  `minos 26.0`; `lipo -archs` reports `arm64`; the built `Info.plist` carries
+  `UIDeviceFamily` `[7]` from `TARGETED_DEVICE_FAMILY`. The bundle contains the
+  ROM-free `spaghetti.o2r`, `gamecontrollerdb.txt`, `config.yml`, `meta/`, and
+  `yamls/`.
+- Launch: the app installed and launched on the Apple Vision Pro Simulator
+  running visionOS 26.0 (`23M336`) and was observed live as PID `13642`. The
+  Simulator's device identifier is deliberately not recorded here: it is a local
+  identifier, and `scripts/check-repo-safety.sh` rejects one in public
+  documentation. The SwiftUI launch window rendered its
+  `status.ready` branch, so `SpaghettiPad_RuntimeInit` returned non-zero across
+  the Swift/Objective-C++ bridge; the failure branch would have read "The engine
+  could not prepare its storage."
+- Runtime side effects, not just return values: `RuntimeInit` created
+  `Documents/mods` in the app container, and `Documents` held nothing else, so
+  `SpaghettiPad_GameArchiveReady` correctly reported no game archive and the
+  window showed the "No game data yet" guidance. Evidence image
+  `docs/screenshots/visionos-launch-window.png` is 1920×1080 with SHA-256
+  `32f878fb1b22cd3c7cfc9db63ec89e39b9112de58dcc17c7b4d4bfa1d34fdb9f`.
+- Maintained patches: `patches/libultraship-visionos.patch` is 472 lines /
+  16,811 bytes, SHA-256
+  `6f048b7662def878da776a60c15ffea6bd186f5a7e3008334d38d414d6a503e3`;
+  `patches/spaghettikart-visionos.patch` is 405 lines / 16,333 bytes, SHA-256
+  `2459d66e7891af8e0b55e70b38421746a33c58159083f9ee62c990f36c7828f1`.
+- Replay: fresh clones checked out at the exact pins
+  `5b28472d477bab101dee2a0f469fe2aee2c58a01` and
+  `f5c3843fe937320b64ff754fa6bf71b13ff5e7a1` accepted both patches in lane
+  order, passed reverse application and `git diff --check`, and produced files
+  byte-identical to the working trees, so the patches capture the whole change.
+  `scripts/check-repo-safety.sh` passed.
+- Boundary: this closes Phase 1 only — that the visionOS app configures, links,
+  launches, and reaches its SwiftUI launch window. **It renders no game
+  content.** `SpaghettiPad_GameMain` is compiled and linked but never called,
+  and every compositor, engine-thread, import, and input entry point in
+  `visionos/SpaghettiPadBridge.h` remains an explicit logged refusal. This is a
+  Simulator result on an `xrsimulator` bundle: `scripts/audit-visionos-app.sh`
+  requires `platform VISIONOS` and deliberately rejects it, so the device audit
+  is unexercised, no `xros` device build was produced, and nothing here speaks
+  to stereo, immersion, comfort, or signing. The toolchain is an Xcode beta.
 
 ### 2026-07-29 — customizable iPad and iPhone controls physically accepted
 

@@ -289,6 +289,59 @@ M-series-iPad performance experiment until it has its own hardware evidence.
 
 ## Current validation
 
+> **The project pivoted to a native visionOS app for Apple Vision Pro on
+> 2026-08-01.** The table below records what was measured on the iPadOS lane
+> and remains true of the released Preview 3 artifact, but that lane is no
+> longer maintained and its open gates were retired unmet. The rest of this
+> README still describes the iPadOS build and is rewritten with the visionOS
+> packaging work.
+>
+> The visionOS lane has **no published artifact**, but it now has hardware
+> results. On an Apple Vision Pro the engine runs on Compositor Services and
+> holds its picture on a screen fixed in the room, at 89–90 Hz, with **every one
+> of 33,601 presented drawables carrying an ARKit device anchor** — the thing a
+> headset requires before it will present anything at all. The eyes' separation
+> was measured at **68.4–70.7 mm**, and the screen demonstrably stays put as the
+> wearer turns.
+>
+> That run lasted 6 min 15 s, which the project owner accepted in place of the
+> ten minutes the gate asks for, and they report it as comfortable with the
+> game's audio playing correctly.
+>
+> Input was the next gate, and the obstacle turned out to be self-inflicted
+> rather than absent: this lane's own window backend drained SDL's event queue
+> every frame, throwing away the one event that makes the engine open a gamepad.
+> No controller could have worked on any platform here. With that fixed on
+> 2026-08-01, **the owner drove a race on the headset, won it, and reports the
+> session as comfortable** — which closes Phase 4. The controller was a pair of
+> **PS VR2 Sense controllers**, which turn out to enumerate as a single combined
+> gamepad; the device log names them, and it is the record here rather than
+> anyone's recollection.
+>
+> What is **not** claimed: the Sense controllers' **6DoF pose**, which needs an
+> ARKit accessory provider that remains a logged refusal — they worked as an
+> ordinary gamepad, buttons and sticks; a **DualSense**, which has never been
+> connected to this app; port order across reconnects; and multiplayer.
+>
+> Making the game itself surround the viewer — rather than hanging one flat
+> picture of it in 3D — is **written as of 2026-08-01 and unverified**. The engine
+> now interprets each frame's display list once per eye, substituting that eye's
+> own frustum and position for the game's projection and shifting the HUD's
+> orthographic passes to a fixed comfortable distance. It builds, replays clean
+> from the pinned revisions, and passes the audit. **Nobody has seen it**: the
+> Vision Pro Simulator reports a single view, so the stereo path declines there by
+> design and only its flat fallback has been exercised. Whether two interpreter
+> passes hold 90 Hz, whether they hold it with the 4K texture pack, and whether
+> the world scale is anywhere near right are all open questions for a wearer.
+>
+> The **MK64 Reloaded 4K pack** does import, load, and render on this lane, which
+> is a Simulator result: resident memory roughly triples and the pack's own art is
+> visible. Its performance on the headset is not claimed. The phase queue
+> and the full evidence live in the
+> [remaining-work ledger](docs/remaining-work.md);
+> [the acceptance guide](docs/VISIONOS_DEVICE_ACCEPTANCE.md) is the procedure
+> that produced these results.
+
 | Area | Current result |
 |---|---|
 | Native app | arm64 iPhoneOS and arm64 Simulator builds target iOS/iPadOS 15+ |
@@ -424,6 +477,7 @@ grant rights to Nintendo material or third-party texture packs.
 | [`docs/BUILDING.md`](docs/BUILDING.md) | Full build, signing, and package-audit guide |
 | [`docs/INSTALL_IPA.md`](docs/INSTALL_IPA.md) | Unsigned developer-preview installation boundary |
 | [`docs/HARDWARE_ACCEPTANCE.md`](docs/HARDWARE_ACCEPTANCE.md) | Physical-device validation workflow |
+| [`docs/VISIONOS_DEVICE_ACCEPTANCE.md`](docs/VISIONOS_DEVICE_ACCEPTANCE.md) | Apple Vision Pro acceptance workflow |
 | [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) | Source and IPA publication gates |
 | [`docs/remaining-work.md`](docs/remaining-work.md) | Evidence ledger and remaining gates |
 | [`RIGHTS_AND_LICENSES.md`](RIGHTS_AND_LICENSES.md) | Project, upstream, and game-data rights boundary |

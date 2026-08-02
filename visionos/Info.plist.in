@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>SpaghettiPad</string>
+    <key>CFBundleExecutable</key>
+    <string>SpaghettiPad</string>
+    <key>CFBundleIdentifier</key>
+    <string>@BUNDLE_ID@</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>SpaghettiPad</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@SPAGHETTIPAD_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@SPAGHETTIPAD_BUILD_NUMBER@</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <!-- Tracks the configured deployment target so the two cannot drift. -->
+    <key>MinimumOSVersion</key>
+    <string>@CMAKE_OSX_DEPLOYMENT_TARGET@</string>
+    <!-- SwiftUI owns the scene lifecycle; visionOS requires multiple scenes so
+         the launch window and the immersive space can coexist. -->
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationPreferredDefaultSceneSessionRole</key>
+        <string>UIWindowSceneSessionRoleApplication</string>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <true/>
+    </dict>
+    <!-- The user's own ROM and texture packs reach the container through Files. -->
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+</dict>
+</plist>

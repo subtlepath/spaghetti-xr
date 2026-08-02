@@ -1,51 +1,78 @@
 #!/usr/bin/env bash
-# Apply the maintained iOS backports to the pinned upstream checkouts.
+# Apply one maintained patch lane to the pinned upstream checkouts.
+#
+# A lane is an ordered list of patches. Order is significant: later patches in a
+# lane are written against the tree the earlier ones produce. Only one lane may
+# be applied to a checkout at a time.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SPAGHETTIKART_DIR="$ROOT/sources/spaghettikart"
 LUS_DIR="$ROOT/sources/spaghettikart/libultraship"
-SPAGHETTIKART_PATCH="$ROOT/patches/spaghettikart-ios.patch"
-SPAGHETTIKART_FIRSTRUN_PATCH="$ROOT/patches/spaghettikart-ios-firstrun.patch"
-SPAGHETTIKART_TOUCH_PATCH="$ROOT/patches/spaghettikart-ios-touch.patch"
-SPAGHETTIKART_UX_PATCH="$ROOT/patches/spaghettikart-ios-ux.patch"
-SPAGHETTIKART_TILT_PATCH="$ROOT/patches/spaghettikart-ios-tilt.patch"
-SPAGHETTIKART_TEXTURE_PACKS_PATCH="$ROOT/patches/spaghettikart-ios-texture-packs.patch"
-SPAGHETTIKART_CUSTOM_TOUCH_PATCH="$ROOT/patches/spaghettikart-ios-custom-touch.patch"
-LUS_PATCH="$ROOT/patches/libultraship-ios.patch"
-LUS_TOUCH_PATCH="$ROOT/patches/libultraship-ios-touch.patch"
-LUS_CONTROLLER_PATCH="$ROOT/patches/libultraship-ios-controller-ports.patch"
+PATCH_DIR="$ROOT/patches"
 EXPECTED_SPAGHETTIKART="5b28472d477bab101dee2a0f469fe2aee2c58a01"
 EXPECTED_LUS="f5c3843fe937320b64ff754fa6bf71b13ff5e7a1"
+
+# Ordered patch lists. Each entry is "<tree>:<patch file>", where <tree> is
+# either "lus" (libultraship) or "sk" (SpaghettiKart).
+IOS_LANE=(
+    "lus:libultraship-ios.patch"
+    "lus:libultraship-ios-touch.patch"
+    "lus:libultraship-ios-controller-ports.patch"
+    "sk:spaghettikart-ios.patch"
+    "sk:spaghettikart-ios-firstrun.patch"
+    "sk:spaghettikart-ios-touch.patch"
+    "sk:spaghettikart-ios-ux.patch"
+    "sk:spaghettikart-ios-tilt.patch"
+    "sk:spaghettikart-ios-texture-packs.patch"
+    "sk:spaghettikart-ios-custom-touch.patch"
+)
+
+VISIONOS_LANE=(
+    "lus:libultraship-visionos.patch"
+    "sk:spaghettikart-visionos.patch"
+)
 
 fail() {
     echo "Patch application failed: $*" >&2
     exit 1
 }
 
+usage() {
+    echo "Usage: scripts/apply-patches.sh [--lane ios|visionos]" >&2
+    exit 2
+}
+
+LANE="${SPAGHETTIPAD_LANE:-ios}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --lane)
+            [ "$#" -ge 2 ] || usage
+            LANE="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+case "$LANE" in
+    ios)
+        LANE_PATCHES=("${IOS_LANE[@]}")
+        ;;
+    visionos)
+        LANE_PATCHES=("${VISIONOS_LANE[@]}")
+        ;;
+    *)
+        fail "unknown lane: $LANE (expected ios or visionos)"
+        ;;
+esac
+
 [ -e "$SPAGHETTIKART_DIR/.git" ] ||
     fail "pinned sources are missing; run scripts/clone-sources.sh first"
 [ -e "$LUS_DIR/.git" ] ||
     fail "pinned sources are missing; run scripts/clone-sources.sh first"
-[ -f "$SPAGHETTIKART_PATCH" ] ||
-    fail "maintained patch is missing: $SPAGHETTIKART_PATCH"
-[ -f "$SPAGHETTIKART_FIRSTRUN_PATCH" ] ||
-    fail "maintained patch is missing: $SPAGHETTIKART_FIRSTRUN_PATCH"
-[ -f "$SPAGHETTIKART_TOUCH_PATCH" ] ||
-    fail "maintained patch is missing: $SPAGHETTIKART_TOUCH_PATCH"
-[ -f "$SPAGHETTIKART_UX_PATCH" ] ||
-    fail "maintained patch is missing: $SPAGHETTIKART_UX_PATCH"
-[ -f "$SPAGHETTIKART_TILT_PATCH" ] ||
-    fail "maintained patch is missing: $SPAGHETTIKART_TILT_PATCH"
-[ -f "$SPAGHETTIKART_TEXTURE_PACKS_PATCH" ] ||
-    fail "maintained patch is missing: $SPAGHETTIKART_TEXTURE_PACKS_PATCH"
-[ -f "$SPAGHETTIKART_CUSTOM_TOUCH_PATCH" ] ||
-    fail "maintained patch is missing: $SPAGHETTIKART_CUSTOM_TOUCH_PATCH"
-[ -f "$LUS_PATCH" ] || fail "maintained patch is missing: $LUS_PATCH"
-[ -f "$LUS_TOUCH_PATCH" ] ||
-    fail "maintained patch is missing: $LUS_TOUCH_PATCH"
-[ -f "$LUS_CONTROLLER_PATCH" ] ||
-    fail "maintained patch is missing: $LUS_CONTROLLER_PATCH"
 [ "$(git -C "$SPAGHETTIKART_DIR" rev-parse HEAD)" = \
     "$EXPECTED_SPAGHETTIKART" ] ||
     fail "SpaghettiKart is not at the planned revision"
@@ -56,138 +83,109 @@ git -C "$SPAGHETTIKART_DIR" diff --cached --quiet ||
 git -C "$LUS_DIR" diff --cached --quiet ||
     fail "libultraship has staged files"
 
-if git -C "$LUS_DIR" apply --reverse --check \
-    "$LUS_CONTROLLER_PATCH" 2>/dev/null; then
-    echo "libultraship iOS base, touch, and controller-port patches are already applied."
-else
-    if git -C "$LUS_DIR" apply --reverse --check \
-        "$LUS_TOUCH_PATCH" 2>/dev/null; then
-        echo "libultraship iOS base and touch patches are already applied."
-    else
-        if git -C "$LUS_DIR" apply --reverse --check \
-            "$LUS_PATCH" 2>/dev/null; then
-            echo "libultraship iOS base patch is already applied."
-        else
+tree_dir() {
+    case "$1" in
+        lus) echo "$LUS_DIR" ;;
+        sk) echo "$SPAGHETTIKART_DIR" ;;
+        *) fail "unknown tree: $1" ;;
+    esac
+}
+
+# Reset guidance for a tree that carries something other than this lane. Both
+# checkouts are disposable by design, so discarding them is always safe.
+reset_hint() {
+    cat >&2 <<EOF
+
+The checkout carries changes this lane does not own — most often the other
+lane's patches. Both source trees are disposable; reset them with:
+
+  git -C sources/spaghettikart/libultraship checkout -- .
+  git -C sources/spaghettikart checkout -- . ':(exclude)libultraship'
+
+then re-run this script.
+EOF
+}
+
+# Fails when a tree holds edits this lane did not make. Only meaningful before
+# the lane's first patch goes on.
+assert_pristine() {
+    case "$1" in
+        lus)
             git -C "$LUS_DIR" diff --quiet ||
-                fail "libultraship has modified tracked files"
-            git -C "$LUS_DIR" apply --check "$LUS_PATCH"
-            git -C "$LUS_DIR" apply "$LUS_PATCH"
-            git -C "$LUS_DIR" apply --reverse --check "$LUS_PATCH" ||
-                fail "libultraship patch does not pass its reverse check"
-            echo "Applied libultraship iOS patch at $EXPECTED_LUS."
+                { echo "Patch application failed: libultraship has modified tracked files" >&2
+                  reset_hint; exit 1; }
+            ;;
+        sk)
+            git -C "$SPAGHETTIKART_DIR" diff --quiet -- . \
+                ':(exclude)libultraship' ||
+                { echo "Patch application failed: SpaghettiKart has modified tracked files" >&2
+                  reset_hint; exit 1; }
+            ;;
+    esac
+}
+
+# Applies one tree's ordered sub-list. Patches within a tree stack, so an
+# earlier patch stops reverse-checking as soon as a later one rewrites its
+# context: the LAST patch that still reverse-checks marks the applied prefix.
+apply_tree_lane() {
+    local tree="$1"
+    shift
+    local patches
+    patches=("$@")
+    [ "${#patches[@]}" -gt 0 ] || return 0
+
+    local dir
+    dir="$(tree_dir "$tree")"
+
+    local name
+    for name in "${patches[@]}"; do
+        [ -f "$PATCH_DIR/$name" ] ||
+            fail "maintained patch is missing: $PATCH_DIR/$name"
+    done
+
+    local start=0 i
+    for ((i = ${#patches[@]} - 1; i >= 0; i--)); do
+        if git -C "$dir" apply --reverse --check \
+            "$PATCH_DIR/${patches[$i]}" 2>/dev/null; then
+            start=$((i + 1))
+            break
         fi
+    done
 
-        git -C "$LUS_DIR" apply --check "$LUS_TOUCH_PATCH"
-        git -C "$LUS_DIR" apply "$LUS_TOUCH_PATCH"
-        git -C "$LUS_DIR" apply --reverse --check "$LUS_TOUCH_PATCH" ||
-            fail "libultraship touch patch does not pass its reverse check"
-        echo "Applied libultraship iOS touch patch at $EXPECTED_LUS."
-    fi
-
-    git -C "$LUS_DIR" apply --check "$LUS_CONTROLLER_PATCH"
-    git -C "$LUS_DIR" apply "$LUS_CONTROLLER_PATCH"
-    git -C "$LUS_DIR" apply --reverse --check "$LUS_CONTROLLER_PATCH" ||
-        fail "libultraship controller-port patch does not pass its reverse check"
-    echo "Applied libultraship iOS controller-port patch at $EXPECTED_LUS."
-fi
-
-if git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-    "$SPAGHETTIKART_CUSTOM_TOUCH_PATCH" 2>/dev/null; then
-    echo "SpaghettiKart iOS base, first-run, touch, UX, tilt, texture-pack, and custom-touch patches are already applied."
-else
-if git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-    "$SPAGHETTIKART_TEXTURE_PACKS_PATCH" 2>/dev/null; then
-    echo "SpaghettiKart iOS base, first-run, touch, UX, tilt, and texture-pack patches are already applied."
-else
-    if git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-        "$SPAGHETTIKART_TILT_PATCH" 2>/dev/null; then
-        echo "SpaghettiKart iOS base, first-run, touch, UX, and tilt patches are already applied."
+    if [ "$start" -eq 0 ]; then
+        assert_pristine "$tree"
     else
-        if git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-            "$SPAGHETTIKART_UX_PATCH" 2>/dev/null; then
-            echo "SpaghettiKart iOS base, first-run, touch, and UX patches are already applied."
-        else
-            if git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-                "$SPAGHETTIKART_TOUCH_PATCH" 2>/dev/null; then
-                echo "SpaghettiKart iOS base, first-run, and touch patches are already applied."
-            else
-                if git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-                    "$SPAGHETTIKART_FIRSTRUN_PATCH" 2>/dev/null; then
-                    echo "SpaghettiKart iOS base and first-run patches are already applied."
-                else
-                    if git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-                        "$SPAGHETTIKART_PATCH" 2>/dev/null; then
-                        echo "SpaghettiKart iOS base patch is already applied."
-                    else
-                        git -C "$SPAGHETTIKART_DIR" diff --quiet -- . \
-                            ':(exclude)libultraship' ||
-                            fail "SpaghettiKart has modified tracked files"
-                        git -C "$SPAGHETTIKART_DIR" apply --check \
-                            "$SPAGHETTIKART_PATCH"
-                        git -C "$SPAGHETTIKART_DIR" apply \
-                            "$SPAGHETTIKART_PATCH"
-                        git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-                            "$SPAGHETTIKART_PATCH" ||
-                            fail "SpaghettiKart patch does not pass its reverse check"
-                        echo "Applied SpaghettiKart iOS patch at $EXPECTED_SPAGHETTIKART."
-                    fi
-
-                    git -C "$SPAGHETTIKART_DIR" apply --check \
-                        "$SPAGHETTIKART_FIRSTRUN_PATCH"
-                    git -C "$SPAGHETTIKART_DIR" apply \
-                        "$SPAGHETTIKART_FIRSTRUN_PATCH"
-                    git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-                        "$SPAGHETTIKART_FIRSTRUN_PATCH" ||
-                        fail "SpaghettiKart first-run patch does not pass its reverse check"
-                    echo "Applied SpaghettiKart iOS first-run patch at $EXPECTED_SPAGHETTIKART."
-                fi
-
-                git -C "$SPAGHETTIKART_DIR" apply --check \
-                    "$SPAGHETTIKART_TOUCH_PATCH"
-                git -C "$SPAGHETTIKART_DIR" apply \
-                    "$SPAGHETTIKART_TOUCH_PATCH"
-                git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-                    "$SPAGHETTIKART_TOUCH_PATCH" ||
-                    fail "SpaghettiKart touch patch does not pass its reverse check"
-                echo "Applied SpaghettiKart iOS touch patch at $EXPECTED_SPAGHETTIKART."
-            fi
-
-            git -C "$SPAGHETTIKART_DIR" apply --check \
-                "$SPAGHETTIKART_UX_PATCH"
-            git -C "$SPAGHETTIKART_DIR" apply \
-                "$SPAGHETTIKART_UX_PATCH"
-            git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-                "$SPAGHETTIKART_UX_PATCH" ||
-                fail "SpaghettiKart UX patch does not pass its reverse check"
-            echo "Applied SpaghettiKart iOS UX patch at $EXPECTED_SPAGHETTIKART."
-        fi
-
-        git -C "$SPAGHETTIKART_DIR" apply --check \
-            "$SPAGHETTIKART_TILT_PATCH"
-        git -C "$SPAGHETTIKART_DIR" apply \
-            "$SPAGHETTIKART_TILT_PATCH"
-        git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-            "$SPAGHETTIKART_TILT_PATCH" ||
-            fail "SpaghettiKart tilt patch does not pass its reverse check"
-        echo "Applied SpaghettiKart iOS tilt patch at $EXPECTED_SPAGHETTIKART."
+        for ((i = 0; i < start; i++)); do
+            echo "Already applied: ${patches[$i]}"
+        done
     fi
 
-    git -C "$SPAGHETTIKART_DIR" apply --check \
-        "$SPAGHETTIKART_TEXTURE_PACKS_PATCH"
-    git -C "$SPAGHETTIKART_DIR" apply \
-        "$SPAGHETTIKART_TEXTURE_PACKS_PATCH"
-    git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-        "$SPAGHETTIKART_TEXTURE_PACKS_PATCH" ||
-        fail "SpaghettiKart texture-pack patch does not pass its reverse check"
-    echo "Applied SpaghettiKart iOS texture-pack patch at $EXPECTED_SPAGHETTIKART."
-fi
+    for ((i = start; i < ${#patches[@]}; i++)); do
+        name="${patches[$i]}"
+        if ! git -C "$dir" apply --check "$PATCH_DIR/$name" 2>/dev/null; then
+            echo "Patch application failed: $name does not apply cleanly" >&2
+            reset_hint
+            exit 1
+        fi
+        git -C "$dir" apply "$PATCH_DIR/$name"
+        git -C "$dir" apply --reverse --check "$PATCH_DIR/$name" ||
+            fail "$name does not pass its reverse check after application"
+        echo "Applied: $name"
+    done
+}
 
-git -C "$SPAGHETTIKART_DIR" apply --check \
-    "$SPAGHETTIKART_CUSTOM_TOUCH_PATCH"
-git -C "$SPAGHETTIKART_DIR" apply \
-    "$SPAGHETTIKART_CUSTOM_TOUCH_PATCH"
-git -C "$SPAGHETTIKART_DIR" apply --reverse --check \
-    "$SPAGHETTIKART_CUSTOM_TOUCH_PATCH" ||
-    fail "SpaghettiKart custom-touch patch does not pass its reverse check"
-echo "Applied SpaghettiKart iOS custom-touch patch at $EXPECTED_SPAGHETTIKART."
-fi
+# Split the lane into per-tree sub-lists, preserving order within each tree.
+LUS_LANE_PATCHES=()
+SK_LANE_PATCHES=()
+for entry in "${LANE_PATCHES[@]}"; do
+    case "${entry%%:*}" in
+        lus) LUS_LANE_PATCHES+=("${entry#*:}") ;;
+        sk) SK_LANE_PATCHES+=("${entry#*:}") ;;
+        *) fail "unknown tree in lane entry: $entry" ;;
+    esac
+done
+
+echo "Patch lane: $LANE"
+# libultraship first: SpaghettiKart's CMake pulls it in as a subdirectory.
+apply_tree_lane lus ${LUS_LANE_PATCHES[@]+"${LUS_LANE_PATCHES[@]}"}
+apply_tree_lane sk ${SK_LANE_PATCHES[@]+"${SK_LANE_PATCHES[@]}"}

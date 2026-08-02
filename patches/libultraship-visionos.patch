@@ -1,0 +1,2643 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 08cc7915..d7bf2f4f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -11,7 +11,19 @@ option(NON_PORTABLE "Build a non-portable version" OFF)
+ option(DISABLE_DLL_LOADER "Disable dynamic library loading support" OFF)
+ option(ENABLE_SCRIPTING "Enable TCC-based C mod compilation and scripting system" OFF)
+ 
+-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++# visionOS reuses every embedded-Apple path in this file. It deliberately does
++# NOT reuse cmake/ios-toolchain-populate.cmake: leetal/ios-cmake sets IOS=ON for
++# every non-Mac platform, which poisons if(IOS ...) throughout libultraship,
++# SDL2 and the consuming project. CMake's own visionOS support is used instead.
++set(LUS_APPLE_EMBEDDED OFF)
++if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "visionOS")
++    set(LUS_APPLE_EMBEDDED ON)
++endif()
++
++if(LUS_APPLE_EMBEDDED)
++    if(ENABLE_SCRIPTING)
++        message(FATAL_ERROR "ENABLE_SCRIPTING is unsupported on iOS and visionOS")
++    endif()
+     option(SIGN_LIBRARY "Enable xcode signing" OFF)
+     option(BUNDLE_ID "Bundle ID for xcode signing" "com.example.libultraship")
+     set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+@@ -19,7 +31,7 @@ endif()
+ 
+ project(libultraship LANGUAGES C CXX)
+ 
+-if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
++if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR LUS_APPLE_EMBEDDED)
+     enable_language(OBJCXX)
+     set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -fobjc-arc")
+     set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -fobjc-arc")
+@@ -56,7 +68,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+     include(cmake/dependencies/mac.cmake)
+ endif()
+ 
+-if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++if (LUS_APPLE_EMBEDDED)
+     include(cmake/dependencies/ios.cmake)
+ endif()
+ 
+diff --git a/cmake/dependencies/common.cmake b/cmake/dependencies/common.cmake
+index 80dec56e..3d685eaa 100644
+--- a/cmake/dependencies/common.cmake
++++ b/cmake/dependencies/common.cmake
+@@ -52,13 +52,26 @@ endif()
+ 
+ #=================== STB ===================
+ set(STB_DIR ${CMAKE_BINARY_DIR}/_deps/stb)
+-file(DOWNLOAD "https://github.com/nothings/stb/raw/0bc88af4de5fb022db643c2d8e549a0927749354/stb_image.h" "${STB_DIR}/stb_image.h")
++set(STB_IMAGE_PATH "${STB_DIR}/stb_image.h")
++set(STB_IMAGE_SHA256
++    c54b15a689e6a1f32c75e2ec23afa442e3e0e37e894b73c1974d08679b20dd5c)
++if(EXISTS "${STB_IMAGE_PATH}")
++    file(SHA256 "${STB_IMAGE_PATH}" STB_IMAGE_EXISTING_SHA256)
++endif()
++if(NOT STB_IMAGE_EXISTING_SHA256 STREQUAL STB_IMAGE_SHA256)
++    file(DOWNLOAD
++        "https://raw.githubusercontent.com/nothings/stb/0bc88af4de5fb022db643c2d8e549a0927749354/stb_image.h"
++        "${STB_IMAGE_PATH}"
++        EXPECTED_HASH SHA256=${STB_IMAGE_SHA256}
++        TLS_VERIFY ON
++    )
++endif()
+ file(WRITE "${STB_DIR}/stb_impl.c" "#define STB_IMAGE_IMPLEMENTATION\n#include \"stb_image.h\"")
+ 
+ add_library(stb STATIC)
+ 
+ target_sources(stb PRIVATE
+-    ${STB_DIR}/stb_image.h
++    ${STB_IMAGE_PATH}
+     ${STB_DIR}/stb_impl.c
+ )
+ 
+diff --git a/cmake/dependencies/ios.cmake b/cmake/dependencies/ios.cmake
+index aad5c586..ef9cfc8a 100644
+--- a/cmake/dependencies/ios.cmake
++++ b/cmake/dependencies/ios.cmake
+@@ -87,4 +87,12 @@ target_sources(ImGui
+ target_include_directories(ImGui PRIVATE ${metalcpp_SOURCE_DIR})
+ target_compile_definitions(ImGui PUBLIC IMGUI_IMPL_METAL_CPP)
+ 
+-target_link_libraries(ImGui PUBLIC SDL2::SDL2-static SDL2::SDL2main)
++# SDL2main is built from src/main/uikit, which calls SDL_UIKitRunApp out of the
++# UIKit video driver. visionOS builds with SDL_VIDEO=OFF (UIScreen is
++# API_UNAVAILABLE there), so SDL2_DISABLE_SDL2MAIN is forced on and the
++# SDL2::SDL2main target does not exist. The Swift shell owns main() instead.
++if(TARGET SDL2::SDL2main)
++    target_link_libraries(ImGui PUBLIC SDL2::SDL2-static SDL2::SDL2main)
++else()
++    target_link_libraries(ImGui PUBLIC SDL2::SDL2-static)
++endif()
+diff --git a/include/fast/Fast3dWindow.h b/include/fast/Fast3dWindow.h
+index 38ed53b8..378bc8a3 100644
+--- a/include/fast/Fast3dWindow.h
++++ b/include/fast/Fast3dWindow.h
+@@ -58,6 +58,12 @@ class Fast3dWindow : public Ship::Window {
+     void EnableSRGBMode();
+     bool DrawAndRunGraphicsCommands(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements);
+ 
++#ifdef __VISIONOS__
++    // Mode B: the same display list interpreted once per eye. Returns false when
++    // stereo could not be drawn, and the caller renders the flat frame instead.
++    bool DrawAndRunStereoFrame(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements);
++#endif
++
+     std::weak_ptr<Interpreter> GetInterpreterWeak() const;
+ 
+   protected:
+diff --git a/include/fast/backends/gfx_metal.h b/include/fast/backends/gfx_metal.h
+index 1d452102..bb3526dc 100644
+--- a/include/fast/backends/gfx_metal.h
++++ b/include/fast/backends/gfx_metal.h
+@@ -224,6 +224,10 @@ class GfxRenderingAPIMetal final : public GfxRenderingAPI {
+     // Current state
+     struct ShaderProgramMetal* mShaderProgram;
+     CA::MetalDrawable* mCurrentDrawable;
++    // Where this frame's finished image lands. That is the current drawable's
++    // texture everywhere a CAMetalLayer exists, and a texture from the shell's
++    // Compositor Services ring on visionOS, where one does not.
++    MTL::Texture* mScreenTexture = nullptr;
+     std::set<int> mDrawnFramebuffers;
+     NS::AutoreleasePool* mFrameAutoreleasePool;
+ 
+diff --git a/include/fast/backends/gfx_visionos.h b/include/fast/backends/gfx_visionos.h
+new file mode 100644
+index 00000000..5366446f
+--- /dev/null
++++ b/include/fast/backends/gfx_visionos.h
+@@ -0,0 +1,207 @@
++//
++//  gfx_visionos.h
++//  libultraship
++//
++//  The window backend for visionOS, and the contract it renders through.
++//
++//  visionOS has no SDL window. SDL2's UIKit video driver is written against
++//  UIScreen, which is API_UNAVAILABLE(visionos), so the whole video subsystem is
++//  compiled out — and with it the CAMetalLayer that gfx_metal.cpp otherwise asks
++//  SDL for a drawable from. Compositor Services owns the display instead, so the
++//  engine renders each flat frame into a texture supplied by the application
++//  shell, which then shows that texture inside the immersive space.
++//
++//  This backend is therefore not "SDL2 minus the window". It is what the SDL2
++//  backend still owed the engine once the window was gone — dimensions, frame
++//  pacing, running state — with everything that only means something on a
++//  desktop answered honestly rather than faked.
++//
++#pragma once
++#ifdef __VISIONOS__
++
++#include "gfx_window_manager_api.h"
++
++#include <chrono>
++#include <cstdint>
++#include <string>
++
++// How many eyes a stereo frame has. Two everywhere this runs; named because the
++// ring, the loop over eyes and the surface's slots all have to agree, and a bare
++// 2 in three files is three chances to disagree.
++#define SPAGHETTIPAD_EYE_COUNT 2
++
++// ------------------------------------------------------------- shell contract
++//
++// Defined by the application shell (visionos/SpaghettiPadRenderSurface.mm) and
++// called from the engine thread. Declared here rather than included from the
++// shell so libultraship keeps no dependency on the application's headers, and
++// deliberately not weak: a missing definition is a link error, not a renderer
++// that quietly draws into nothing.
++extern "C" {
++
++// The single Metal device the engine and the compositor share. Both sample and
++// render the same textures, so a second device would not merely be wasteful, it
++// would be wrong.
++void* SpaghettiPad_RenderMetalDevice(void);
++
++// The engine's render surface in pixels. In Mode A this is a fixed flat frame;
++// in Mode B it is one eye's viewport, which the compositor reports and which is
++// therefore not known until the immersive space has handed over its first
++// drawable. Either way the engine asks every frame, so a change is picked up.
++void SpaghettiPad_RenderSurfaceSize(uint32_t* width, uint32_t* height);
++
++// Takes the next texture of the surface's ring, waiting if the GPU still holds
++// every one of them. This is the Compositor Services analogue of
++// -[CAMetalLayer nextDrawable], and it is called from the same place. In Mode B
++// it returns the texture for the eye most recently selected by
++// SpaghettiPad_RenderBeginEye.
++void* SpaghettiPad_RenderAcquireTexture(void);
++
++// Hands that texture to the compositor once `commandBuffer` — the committed
++// command buffer that rendered it — completes. The analogue of
++// -[MTLCommandBuffer presentDrawable:], and it is called from the same place.
++void SpaghettiPad_RenderPublishTexture(void* texture, void* commandBuffer);
++
++// Non-zero while the immersive space is open and consuming frames. When it is
++// zero the game loop idles rather than rendering frames nothing will show.
++int SpaghettiPad_RenderIsLive(void);
++
++// ------------------------------------------------------------------ Mode B
++//
++// Mode A draws the game flat and hangs it on a screen in the room; everything
++// stereoscopic about it belongs to the screen, not to the game. Mode B draws the
++// game itself in stereo: the display list runs once per eye, with the wearer's
++// head standing in for the game's camera, so the world has depth rather than
++// being a picture of a world that has depth.
++//
++// What that costs is one full interpreter pass per eye. What it needs from the
++// shell is, per eye and per frame, the two things the compositor knows and the
++// engine cannot: the shape of that eye's frustum, and where that eye is.
++
++// One eye's geometry for one frame, as the compositor reports it.
++//
++// Guarded rather than simply declared, because the shell's own contract header
++// carries the identical definition. Neither tree may include the other's
++// headers — that boundary is the whole point of this file — so the type is
++// written out twice and whichever translation unit sees it first defines it.
++#ifndef SPAGHETTIPAD_EYE_VIEW_DEFINED
++#define SPAGHETTIPAD_EYE_VIEW_DEFINED
++typedef struct SpaghettiPadEyeView {
++    // Tangents of the angles bounding this eye's frustum, measured from the view
++    // axis: left, right, up, down. All four are positive magnitudes, and they are
++    // not symmetric — a Vision Pro's frustums are canted outwards, which is
++    // exactly the asymmetry a hand-rolled symmetric perspective would discard.
++    float tangents[4];
++
++    // Where this eye sits relative to the pose the world was last recentred to,
++    // already inverted: eye-from-recentre, in metres.
++    //
++    // Column-major, which is both simd's own memory order and — because Fast3D
++    // multiplies row vectors on the left — precisely the layout its float[4][4]
++    // matrices use. The engine copies it without transposing and rescales the
++    // translation into game units; see kMetresPerGameUnit.
++    float eyeFromRecentre[16];
++
++    // Non-zero once these came from a real drawable. Before the immersive space
++    // has handed one over there is nothing truthful to report, and the engine
++    // renders Mode A's flat frame rather than guessing at a frustum.
++    int valid;
++} SpaghettiPadEyeView;
++#endif
++
++// Non-zero when the engine should render this frame in stereo. Read once per
++// frame: the mode can be switched while the game is running, and a frame must
++// not change its mind halfway through.
++int SpaghettiPad_RenderStereoEnabled(void);
++
++// Opens a stereo frame and reserves one ring slot for both of its eyes. Returns
++// zero if no slot is free, in which case the engine skips the frame rather than
++// rendering half of one.
++int SpaghettiPad_RenderBeginStereoFrame(void);
++
++// Selects which eye the next SpaghettiPad_RenderAcquireTexture belongs to, and
++// fills in that eye's geometry for this frame. Returns zero if the compositor
++// has nothing to report, which the engine treats as "not in stereo this frame".
++int SpaghettiPad_RenderBeginEye(int eye, SpaghettiPadEyeView* view);
++
++// Metres per game unit: how big Mario Kart 64's world is when a real person
++// stands in it. Nothing in the ROM says, so this is a comfort setting rather
++// than a measurement, and it lives in the shell so it can be changed without
++// rebuilding the engine.
++float SpaghettiPad_RenderWorldScale(void);
++
++// The rate the compositor is presenting at, measured rather than assumed: the
++// Simulator runs at 60 Hz and a headset at 90 or more. This is the engine's only
++// way to ask what the display is doing, since it no longer has one.
++uint32_t SpaghettiPad_RenderDisplayRate(void);
++
++// Called when the set of game controllers the control deck has actually opened
++// changes: `count` is how many it holds and `names` is their comma-separated SDL
++// names, or an empty string when there are none.
++//
++// This reports the engine's own state rather than SDL's raw device list, because
++// the two differ for reasons worth telling apart — a pad SDL enumerates but has
++// no mapping for is never opened, and reads as no controller at all. Nothing on
++// a headset can be seen or captured, so a log line is the only way to tell a
++// controller that never paired from one that paired and was never read.
++void SpaghettiPad_InputDevicesChanged(int count, const char* names);
++}
++
++namespace Fast {
++
++class GfxWindowBackendVisionOS final : public GfxWindowBackend {
++  public:
++    GfxWindowBackendVisionOS() = default;
++    ~GfxWindowBackendVisionOS() override = default;
++
++    void Init(const char* gameName, const char* apiName, bool startFullScreen, uint32_t width, uint32_t height,
++              int32_t posX, int32_t posY) override;
++    void Close() override;
++    void SetKeyboardCallbacks(bool (*onKeyDown)(int scancode), bool (*onKeyUp)(int scancode),
++                              void (*onAllKeysUp)()) override;
++    void SetMouseCallbacks(bool (*onMouseButtonDown)(int btn), bool (*onMouseButtonUp)(int btn)) override;
++    void SetFullscreenChangedCallback(void (*onFullscreenChanged)(bool isNowFullscreen)) override;
++    void SetFullscreen(bool fullscreen) override;
++    void GetActiveWindowRefreshRate(uint32_t* refreshRate) override;
++    void SetCursorVisibility(bool visible) override;
++    void SetMousePos(int32_t posX, int32_t posY) override;
++    void GetMousePos(int32_t* x, int32_t* y) override;
++    void GetMouseDelta(int32_t* x, int32_t* y) override;
++    void GetMouseWheel(float* x, float* y) override;
++    bool GetMouseState(uint32_t btn) override;
++    void SetMouseCapture(bool capture) override;
++    bool IsMouseCaptured() override;
++    void GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) override;
++    void HandleEvents() override;
++    bool IsFrameReady() override;
++    void SwapBuffersBegin() override;
++    void SwapBuffersEnd() override;
++    double GetTime() override;
++    int GetTargetFps() override;
++    void SetTargetFps(int fps) override;
++    void SetMaxFrameLatency(int latency) override;
++    const char* GetKeyName(int scancode) override;
++    bool CanDisableVsync() override;
++    bool IsRunning() override;
++    void Destroy() override;
++    bool IsFullscreen() override;
++
++  private:
++    void SyncFramerateWithTime();
++    void ReportInputDevices();
++
++    std::chrono::steady_clock::time_point mNextFrame{};
++    void (*mOnAllKeysUp)() = nullptr;
++
++    // The last set reported through SpaghettiPad_InputDevicesChanged, so the
++    // report is an edge rather than a line every frame. The first report is made
++    // whatever it finds, including nothing: a log with no line about controllers
++    // at all would not distinguish "none connected" from a reporting path that
++    // never ran, and on a headset the log is the only witness there is.
++    std::string mReportedInputDevices;
++    bool mHasReportedInputDevices = false;
++};
++
++} // namespace Fast
++
++#endif
+diff --git a/include/fast/interpreter.h b/include/fast/interpreter.h
+index d4b410b8..669ea86f 100644
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -19,6 +19,12 @@
+ #include "fast/resource/type/Texture.h"
+ #include "ship/resource/Resource.h"
+ 
++#ifdef __VISIONOS__
++// Mode B's per-eye geometry crosses into this class by value, so its definition
++// has to be visible here rather than forward-declared.
++#include "fast/backends/gfx_visionos.h"
++#endif
++
+ // TODO figure out why changing these to 640x480 makes the game only render in a quarter of the window
+ #define SCREEN_WIDTH 320
+ #define SCREEN_HEIGHT 240
+@@ -201,6 +207,16 @@ struct TextureCacheValue {
+     uint8_t cms, cmt;
+     bool linear_filter;
+ 
++    // What this entry costs, and where its pixels came from. The cache was
++    // bounded by entry count alone, which was a byte bound only while every
++    // texture was N64-sized; a 4K replacement pack made 1024 entries worth
++    // multiple gigabytes and a device killed the process for it. Entries whose
++    // pixels came from an archive resource record its path, so evicting the
++    // GPU copy can release the decoded CPU copy with it — the resource reloads
++    // from the archive on demand if it is ever drawn again.
++    size_t bytes = 0;
++    std::string resource_path;
++
+     std::list<struct TextureCacheMapIter>::iterator lru_location;
+ };
+ 
+@@ -335,6 +351,10 @@ struct GfxTextureCache {
+     TextureCacheMap map;
+     std::list<TextureCacheMapIter> lru;
+     std::vector<uint32_t> free_texture_ids;
++    // The byte bound beside the entry bound, and the entry the current draw
++    // just uploaded into — the one entry the byte eviction must never take.
++    size_t total_bytes = 0;
++    TextureCacheNode* last_inserted = nullptr;
+ };
+ 
+ struct ColorCombiner {
+@@ -379,7 +399,10 @@ class Interpreter {
+     void StartFrame();
+     void RunGuiOnly();
+     void Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements);
+-    void EndFrame();
++    // `pace` is false only for the first eye of a Mode B stereo frame, where two
++    // submissions make up one frame and only one of them may wait out its
++    // interval.
++    void EndFrame(bool pace = true);
+     void HandleWindowEvents();
+     bool IsFrameReady();
+     bool ViewportMatchesRendererResolution();
+@@ -408,6 +431,40 @@ class Interpreter {
+     void SetMsaaLevel(uint32_t level);
+     void GetCurDimensions(uint32_t* width, uint32_t* height);
+ 
++#ifdef __VISIONOS__
++    // Mode B. Between these two calls every perspective projection the game
++    // loads is replaced by one belonging to this eye, and every orthographic one
++    // is shifted sideways so the HUD sits at a comfortable distance rather than
++    // at infinity. Outside them nothing changes, which is what keeps Mode A and
++    // the desktop lanes byte-identical to upstream.
++    //
++    // Explicitly ::-qualified. This class lives in namespace Fast, and an
++    // elaborated `struct SpaghettiPadEyeView` here would declare a second,
++    // incomplete Fast::SpaghettiPadEyeView rather than naming the shell's.
++    void BeginStereoEye(const ::SpaghettiPadEyeView& view, bool lastEye);
++    void EndStereoEye();
++    // True while a Mode B eye that is not the frame's last is being drawn. The
++    // whole-frame CPU readback (OTR_G_READFB) runs only in the last eye: run
++    // per eye it costs a synchronous readback twice, and whichever eye ran
++    // last owned the buffer — which put one eye's captured picture in the
++    // other eye's view wherever the game draws those pixels back on screen.
++    bool StereoSkipsCpuReadback() const {
++        return mStereoActive && !mStereoLastEye;
++    }
++
++    // What replaces one projection matrix for the eye currently open.
++    void StereoProjection(const float game[4][4], float replacement[4][4]);
++
++    // Whether a rectangle primitive belongs on a panel of the eye currently
++    // open. Rectangles never reach StereoProjection — they are written straight
++    // to clip space, with P_matrix untouched — so their placement has to be
++    // applied at the point where they are built instead. Fill-cycle clears and
++    // off-screen-framebuffer draws answer no and keep their coordinates; which
++    // panel — HUD or backdrop — is the caller's decision, where full-width
++    // strips read as backgrounds.
++    bool StereoRectOnPanel(float ndcLeft, float ndcRight, uint32_t cycleType) const;
++#endif
++
+     // private: TODO make these private
+     void Flush();
+     ShaderProgram* LookupOrCreateShaderProgram(uint64_t id0, uint64_t id1);
+@@ -415,6 +472,14 @@ class Interpreter {
+     void ShaderCacheClear();
+     void TextureCacheClear();
+     bool TextureCacheLookup(int i, const TextureCacheKey& key);
++    // Books a finished upload against the entry TextureCacheLookup just
++    // inserted, then evicts from the LRU end until the cache is back under its
++    // byte budget. Called once per import, from ImportTexture.
++    void RecordTextureUpload(const RawTexMetadata* metadata, uint32_t origSizeBytes);
++    // Evicts the least recently used entry: returns its texture id to the free
++    // list, and releases the decoded archive resource behind it if it recorded
++    // one.
++    void EvictTextureCacheLru();
+     void TextureCacheDelete(const uint8_t* origAddr);
+     void ImportTextureRgba16(int tile, bool importReplacement);
+     void ImportTextureRgba32(int tile, bool importReplacement);
+@@ -542,6 +607,86 @@ class Interpreter {
+     size_t mShadersIndex;
+     int mInterpolationIndex;
+     int mInterpolationIndexTarget;
++
++#ifdef __VISIONOS__
++    // Mode B's per-eye state, rebuilt once per eye per frame.
++
++    // Eye-from-recentre with its translation already in game units, in the
++    // row-vector layout Fast3D multiplies with. Everything the game draws in
++    // perspective passes through this.
++    float mStereoEyeFromRecentre[4][4]{};
++
++    // This eye's frustum, as the four tangents bounding it. A projection is built
++    // from these per matrix rather than once per eye, because its near and far
++    // planes come from whatever the game asked for.
++    float mStereoTangents[4]{};
++
++    // The projection the game believes it has. Kept because the game's own
++    // load-and-multiply semantics have to survive being overridden: a display
++    // list that multiplies onto the projection must compound onto the matrix it
++    // last loaded, not onto the eye's frustum, or the second multiply in a frame
++    // would apply the headset's geometry twice.
++    float mStereoGameProjection[4][4]{};
++
++    // The same projection, factorised, because the composed product lies about
++    // what it is. Mario Kart 64 multiplies its camera's lookAt matrix onto the
++    // *projection* stack (G_MTX_MUL | G_MTX_PROJECTION), and camera-times-
++    // perspective no longer classifies as perspective — its w row picks up the
++    // camera translation. Classifying the product sent the entire racing world
++    // down the orthographic path, flat on the HUD panel: no depth, no
++    // head-look, everything pressed up at panel distance. What the
++    // classification and the near/far recovery need is the matrix the last
++    // LOAD carried; what the eye needs applied ahead of it is the product of
++    // every MUL since — the game's own camera, exactly as the game placed it.
++    float mStereoGameLoaded[4][4]{};
++    float mStereoGamePre[4][4]{};
++    bool mStereoGameHasPre{};
++
++    // Whether this eye's pass has loaded a perspective projection yet, and
++    // whether the previous pass over the same display list ever did. Together
++    // they answer the question an orthographic pass by itself cannot: is this
++    // a scene backdrop or an overlay? The skybox is drawn before the world,
++    // the HUD after it, and a frame with no perspective in it at all is a menu
++    // whose 2D belongs on the readable panel.
++    bool mStereoEyeSawPerspective{};
++    bool mStereoLastEyeHadPerspective{};
++
++    // Whether the eye being drawn is the frame's last, set by BeginStereoEye.
++    // The CPU readback path consults it through StereoSkipsCpuReadback.
++    bool mStereoLastEye{};
++
++    // Where the HUD panel's centre falls in this eye's NDC, and the NDC
++    // half-extents that give the panel its size. The panel is a fixed object in
++    // the recentre frame; BeginStereoEye projects its centre through this eye's
++    // full pose each frame, so convergence and cant are in these numbers rather
++    // than approximated on top of them. A scale of zero means the panel is
++    // behind this eye and nothing 2D should rasterize.
++    float mStereoHudCentre[2]{};
++    float mStereoHudScale[2]{ 1.0f, 1.0f };
++
++    // The backdrop panel: the same construction, far and wide, for orthographic
++    // passes that are scenery rather than overlay. A skybox left on the HUD
++    // panel would hang two metres in front of a world that now has real
++    // depths.
++    float mStereoBgCentre[2]{};
++    float mStereoBgScale[2]{};
++
++    bool mStereoActive{};
++
++    // Temporary: how many projection substitutions have been logged in full.
++    // Remove with the diagnostics in StereoProjection once Mode B's black frame
++    // is understood.
++    int mStereoDiagnostics{};
++
++    // Temporary: how many viewport/scissor adjustments have been logged.
++    int mViewportDiagnostics{};
++
++    // Temporary: per-eye triangle fates, reset at the end of each eye.
++    int mEyeDiagnostics{};
++    uint32_t mTriangleTotal{};
++    uint32_t mTriangleClipRejected{};
++    uint32_t mTriangleCullRejected{};
++#endif
+ };
+ 
+ void gfx_set_target_ucode(UcodeHandlers ucode);
+diff --git a/include/libultraship/bridge/windowbridge.h b/include/libultraship/bridge/windowbridge.h
+index e1a1f017..a74b2f25 100644
+--- a/include/libultraship/bridge/windowbridge.h
++++ b/include/libultraship/bridge/windowbridge.h
+@@ -10,6 +10,13 @@ extern "C" {
+ /** @brief Returns true if the application window is running (has not been closed). */
+ API_EXPORT bool WindowIsRunning();
+ 
++/**
++ * @brief Processes window events and returns true when the next game frame may run.
++ *
++ * A false result yields briefly so a suspended app does not spin its game loop.
++ */
++API_EXPORT bool WindowIsFrameReady();
++
+ /** @brief Returns the current width of the game window in pixels. */
+ API_EXPORT uint32_t WindowGetWidth();
+ 
+diff --git a/include/ship/audio/Audio.h b/include/ship/audio/Audio.h
+index 2a47bacc..07fb2a3a 100644
+--- a/include/ship/audio/Audio.h
++++ b/include/ship/audio/Audio.h
+@@ -67,6 +67,9 @@ class Audio {
+      */
+     AudioChannelsSetting GetAudioChannels() const;
+ 
++    /** @brief Pauses or resumes the active audio backend. */
++    void SetPaused(bool paused);
++
+   protected:
+     /** @brief (Re)initialises the AudioPlayer for the current backend and channel settings. */
+     void InitAudioPlayer();
+diff --git a/include/ship/audio/AudioPlayer.h b/include/ship/audio/AudioPlayer.h
+index 2725ec3c..1cde3ff2 100644
+--- a/include/ship/audio/AudioPlayer.h
++++ b/include/ship/audio/AudioPlayer.h
+@@ -71,6 +71,15 @@ class AudioPlayer {
+     /** @brief Returns true if Init() has been called and succeeded. */
+     bool IsInitialized();
+ 
++    /**
++     * @brief Pauses or resumes output without destroying the audio backend.
++     *
++     * Backends that do not require explicit pause handling may keep the
++     * default no-op implementation.
++     */
++    virtual void SetPaused(bool) {
++    }
++
+     /** @brief Returns the configured output sample rate in Hz. */
+     int32_t GetSampleRate() const;
+ 
+@@ -158,7 +167,7 @@ class AudioPlayer {
+ #include "WasapiAudioPlayer.h"
+ #endif
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(__IOS__)
+ #include "CoreAudioAudioPlayer.h"
+ #endif
+ 
+diff --git a/include/ship/audio/SDLAudioPlayer.h b/include/ship/audio/SDLAudioPlayer.h
+index ac61dd36..b440c059 100644
+--- a/include/ship/audio/SDLAudioPlayer.h
++++ b/include/ship/audio/SDLAudioPlayer.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include "AudioPlayer.h"
++#include <atomic>
+ #include <SDL2/SDL.h>
+ 
+ namespace Ship {
+@@ -29,6 +30,9 @@ class SDLAudioPlayer final : public AudioPlayer {
+      */
+     int Buffered() override;
+ 
++    /** @brief Pauses/resumes the SDL device and drops audio queued before a pause. */
++    void SetPaused(bool paused) override;
++
+   protected:
+     /**
+      * @brief Opens the SDL audio device with the configured settings.
+@@ -51,5 +55,6 @@ class SDLAudioPlayer final : public AudioPlayer {
+   private:
+     SDL_AudioDeviceID mDevice = 0; ///< Handle to the opened SDL audio device.
+     int32_t mNumChannels = 2;      ///< Number of output channels (2 for stereo, 6 for 5.1).
++    std::atomic<bool> mPaused = false;
+ };
+ } // namespace Ship
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 45989b66..992fbb87 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -55,7 +55,7 @@ add_subdirectory("libultraship")
+ 
+ add_subdirectory("ship")
+ 
+-if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
++if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR LUS_APPLE_EMBEDDED)
+     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/ship/utils/AppleFolderManager.mm PROPERTIES COMPILE_FLAGS -fno-objc-arc)
+ endif()
+ 
+@@ -72,7 +72,7 @@ target_include_directories(libultraship
+ 
+ #=================== Linking ===================
+ if(INCLUDE_MPQ_SUPPORT)
+-    if (NOT CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    if (NOT CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT LUS_APPLE_EMBEDDED)
+         target_link_libraries(libultraship PUBLIC "$<LINK_LIBRARY:WHOLE_ARCHIVE,storm>")
+     else()
+         target_link_libraries(libultraship PUBLIC storm)
+@@ -110,7 +110,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+ 
+ endif()
+ 
+-if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
++if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR LUS_APPLE_EMBEDDED)
+     find_Library(OSX_FOUNDATION Foundation)
+     find_Library(OSX_AVFOUNDATION AVFoundation)
+     find_library(METAL Metal)
+@@ -153,7 +153,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+     )
+ endif()
+ 
+-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
++if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR LUS_APPLE_EMBEDDED)
+     set_target_properties(${PROJECT_NAME} PROPERTIES
+         XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
+     )
+@@ -173,15 +173,22 @@ if(NOT SPDLOG_MIN_CUTOFF IN_LIST LOG_LEVELS)
+     message(FATAL_ERROR "SPDLOG_MIN_CUTOFF must be one of ${LOG_LEVELS}")
+ endif()
+ 
+-if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
++if (LUS_APPLE_EMBEDDED)
+     target_compile_definitions(libultraship PRIVATE
+         $<$<CONFIG:Debug>:_DEBUG>
+         $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
+         SPDLOG_ACTIVE_LEVEL=${SPDLOG_MIN_CUTOFF}
++        # visionOS keeps __IOS__ so the shared embedded-Apple paths (mobile
++        # ImGui scaling, container-relative file layout, no desktop
++        # fullscreen) stay live, and adds __VISIONOS__ for the divergence.
+         __IOS__
++        $<$<STREQUAL:${CMAKE_SYSTEM_NAME},visionOS>:__VISIONOS__>
+     )
+ 
+-    set_xcode_property(${PROJECT_NAME} PRODUCT_BUNDLE_IDENTIFIER ${BUNDLE_ID} All)
++    # set_xcode_property() comes from the leetal/ios-cmake toolchain, which the
++    # visionOS lane does not include. This is what that macro expands to.
++    set_property(TARGET ${PROJECT_NAME}
++        PROPERTY XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${BUNDLE_ID}")
+ 
+     if(NOT SIGN_LIBRARY)
+         set_target_properties(${PROJECT_NAME} PROPERTIES
+diff --git a/src/fast/Fast3dWindow.cpp b/src/fast/Fast3dWindow.cpp
+index da8adcfd..8dabcc33 100644
+--- a/src/fast/Fast3dWindow.cpp
++++ b/src/fast/Fast3dWindow.cpp
+@@ -11,6 +11,7 @@
+ #include "fast/backends/gfx_metal.h"
+ #include "fast/backends/gfx_direct3d_common.h"
+ #include "fast/backends/gfx_direct3d11.h"
++#include "fast/backends/gfx_visionos.h"
+ #include "fast/backends/gfx_window_manager_api.h"
+ 
+ #include <fstream>
+@@ -120,10 +121,18 @@ void Fast3dWindow::SetMaximumFrameLatency(int32_t latency) {
+ }
+ 
+ void Fast3dWindow::GetPixelDepthPrepare(float x, float y) {
++    if (!IsFrameReady()) {
++        return;
++    }
++
+     mInterpreter->GetPixelDepthPrepare(x, y);
+ }
+ 
+ uint16_t Fast3dWindow::GetPixelDepth(float x, float y) {
++    if (!IsFrameReady()) {
++        return 0;
++    }
++
+     return mInterpreter->GetPixelDepth(x, y);
+ }
+ 
+@@ -146,7 +155,16 @@ void Fast3dWindow::InitWindowManager() {
+ #ifdef __APPLE__
+         case Ship::WindowBackend::FAST3D_SDL_METAL:
+             mRenderingApi = new GfxRenderingAPIMetal();
++#ifdef __VISIONOS__
++            // The enum value is reused rather than extended: it is persisted in
++            // the config file and switched on by Gui.cpp to reach the Metal
++            // rendering API, which is still exactly what this is. Only the SDL
++            // half of the pair is untrue on visionOS, and that is the half
++            // being replaced here.
++            mWindowManagerApi = new GfxWindowBackendVisionOS();
++#else
+             mWindowManagerApi = new GfxWindowBackendSDL2();
++#endif
+             break;
+ #endif
+         default:
+@@ -183,6 +201,58 @@ void Fast3dWindow::EndFrame() {
+     mInterpreter->EndFrame();
+ }
+ 
++#ifdef __VISIONOS__
++
++// Mode B's frame. The same display list, interpreted once per eye, each pass
++// rendering into that eye's own texture.
++//
++// It is a loop around the mono frame rather than a separate path because that is
++// the honest shape of the change: nothing about how a frame is built differs
++// between the eyes except the projection, and hiding that behind a second render
++// path would invite the two to drift apart. What the loop does own is the two
++// things that must happen once per *frame* rather than once per eye — the mouse
++// state and the frame pacing — and getting the second of those wrong halves the
++// frame rate in a way that looks like the stereo cost twice what it did.
++bool Fast3dWindow::DrawAndRunStereoFrame(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements) {
++    if (!SpaghettiPad_RenderBeginStereoFrame()) {
++        return false;
++    }
++
++    std::shared_ptr<Window> wnd = Ship::Context::GetInstance()->GetWindow();
++    auto gui = wnd->GetGui();
++
++    wnd->GetMouseStateManager()->StartFrame();
++
++    for (int eye = 0; eye < SPAGHETTIPAD_EYE_COUNT; ++eye) {
++        SpaghettiPadEyeView view = {};
++        if (!SpaghettiPad_RenderBeginEye(eye, &view)) {
++            // The compositor stopped reporting mid-frame — the space closed, or
++            // tracking dropped. The frame is reported as drawn even though it was
++            // not, deliberately: the slot it reserved is half filled, and falling
++            // through to the flat path would hand the caller an eye of that slot
++            // to draw a whole frame into. The surface never publishes a frame
++            // missing an eye, so this costs one frame of the compositor showing
++            // the previous one, and the slot returns to the ring on its own.
++            return true;
++        }
++
++        gui->StartDraw();
++        mInterpreter->StartFrame();
++        mInterpreter->BeginStereoEye(view, eye == SPAGHETTIPAD_EYE_COUNT - 1);
++        mInterpreter->Run(commands, mtxReplacements);
++        mInterpreter->EndStereoEye();
++        gui->EndDraw();
++
++        // Only the last eye paces. Both submit, both present into the ring, but
++        // a frame is one interval of wall-clock however many times it was drawn.
++        mInterpreter->EndFrame(eye == SPAGHETTIPAD_EYE_COUNT - 1);
++    }
++
++    return true;
++}
++
++#endif
++
+ bool Fast3dWindow::IsFrameReady() {
+     return mWindowManagerApi->IsFrameReady();
+ }
+@@ -195,6 +265,16 @@ bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands, const std::unordere
+         return false;
+     }
+ 
++#ifdef __VISIONOS__
++    // Mode B draws the game in stereo. It falls through to the flat frame below
++    // whenever it cannot — the mode is off, the immersive space is closed, the
++    // compositor has not reported a view yet — so a refusal costs a frame of
++    // Mode A rather than a frame of nothing.
++    if (SpaghettiPad_RenderStereoEnabled() && DrawAndRunStereoFrame(commands, mtxReplacements)) {
++        return true;
++    }
++#endif
++
+     auto gui = wnd->GetGui();
+     // Setup mouse state manager
+     wnd->GetMouseStateManager()->StartFrame();
+diff --git a/src/fast/backends/gfx_metal.cpp b/src/fast/backends/gfx_metal.cpp
+index 759f0981..26dfbdca 100644
+--- a/src/fast/backends/gfx_metal.cpp
++++ b/src/fast/backends/gfx_metal.cpp
+@@ -33,6 +33,7 @@
+ #include <spdlog/fmt/fmt.h>
+ 
+ #include "fast/backends/gfx_metal_shader.h"
++#include "fast/backends/gfx_visionos.h"
+ 
+ #include "libultraship/libultra/abi.h"
+ #include "ship/Context.h"
+@@ -74,10 +75,23 @@ bool GfxRenderingAPIMetal::MetalInit(SDL_Renderer* renderer) {
+     mRenderer = renderer;
+     NS::AutoreleasePool* autorelease_pool = NS::AutoreleasePool::alloc()->init();
+ 
++#ifdef __VISIONOS__
++    // There is no SDL renderer and no CAMetalLayer to take one from: the shell's
++    // Compositor Services surface owns the device and hands over one already
++    // allocated texture per frame. See gfx_visionos.h.
++    mLayer = nullptr;
++    mDevice = (MTL::Device*)SpaghettiPad_RenderMetalDevice();
++    if (mDevice == nullptr) {
++        SPDLOG_ERROR("The visionOS render surface has no Metal device");
++        autorelease_pool->release();
++        return false;
++    }
++#else
+     mLayer = (CA::MetalLayer*)SDL_RenderGetMetalLayer(renderer);
+     mLayer->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+ 
+     mDevice = mLayer->device();
++#endif
+     mCommandQueue = mDevice->newCommandQueue();
+     mReadbackQueue = mDevice->newCommandQueue();
+ 
+@@ -96,7 +110,14 @@ static void SetupScreenFramebuffer(uint32_t width, uint32_t height);
+ 
+ void GfxRenderingAPIMetal::NewFrame() {
+     int width, height;
++#ifdef __VISIONOS__
++    uint32_t surfaceWidth = 0, surfaceHeight = 0;
++    SpaghettiPad_RenderSurfaceSize(&surfaceWidth, &surfaceHeight);
++    width = (int)surfaceWidth;
++    height = (int)surfaceHeight;
++#else
+     SDL_GetRendererOutputSize(mRenderer, &width, &height);
++#endif
+     SetupScreenFramebuffer(width, height);
+ 
+     MTL::RenderPassDescriptor* current_render_pass = mFramebuffers[0].mRenderPassDescriptor;
+@@ -118,8 +139,34 @@ void GfxRenderingAPIMetal::RenderDrawData(ImDrawData* drawData) {
+     MTL::Texture* screen_texture = mTextures[framebuffer.mTextureId].texture;
+     int fb_width = (int)(drawData->DisplaySize.x * drawData->FramebufferScale.x);
+     int fb_height = (int)(drawData->DisplaySize.y * drawData->FramebufferScale.y);
++#ifdef __VISIONOS__
++    // This is the only place in the whole pipeline that can silently draw
++    // nothing while every input to it is correct, which is precisely the shape
++    // of Mode B's black frame. The guard exists for a desktop full-screen
++    // transition, a thing visionOS has no equivalent of, and it compares the eye
++    // texture against ImGui's display size — two numbers that have no reason to
++    // agree once an eye is 1856 x 1792 and the display was last 1920 x 1080.
++    //
++    // For this run it reports rather than returns, so the mismatch is measured
++    // and the consequence of ignoring it is visible at the same time.
++    {
++        static int logs = 0;
++        const bool wouldReturn =
++            (int)screen_texture->width() != fb_width || (int)screen_texture->height() != fb_height;
++        if (logs < 8) {
++            ++logs;
++            SPDLOG_WARN("[imgui] screen texture {}x{} vs drawData {}x{} (display {:.1f}x{:.1f} "
++                        "scale {:.2f}x{:.2f}) -> upstream would {}",
++                        screen_texture->width(), screen_texture->height(), fb_width, fb_height,
++                        drawData->DisplaySize.x, drawData->DisplaySize.y,
++                        drawData->FramebufferScale.x, drawData->FramebufferScale.y,
++                        wouldReturn ? "DRAW NOTHING" : "draw");
++        }
++    }
++#else
+     if (screen_texture->width() != fb_width || screen_texture->height() != fb_height)
+         return;
++#endif
+ 
+     ImGui_ImplMetal_RenderDrawData(drawData, framebuffer.mCommandBuffer, framebuffer.mCommandEncoder);
+ }
+@@ -618,7 +665,14 @@ void GfxRenderingAPIMetal::EndFrame() {
+         mScreenReadbackRequested = false;
+     }
+ 
++#ifdef __VISIONOS__
++    // No drawable to present: the compositor shows this texture on the screen
++    // inside the immersive space, and only once the GPU has finished writing it,
++    // which is what handing it the command buffer before the commit below is for.
++    SpaghettiPad_RenderPublishTexture(mScreenTexture, screen_framebuffer.mCommandBuffer);
++#else
+     screen_framebuffer.mCommandBuffer->presentDrawable(mCurrentDrawable);
++#endif
+     mCurrentVertexBufferPoolIndex = (mCurrentVertexBufferPoolIndex + 1) % kMaxVertexBufferPoolSize;
+     screen_framebuffer.mCommandBuffer->commit();
+ 
+@@ -688,7 +742,15 @@ int GfxRenderingAPIMetal::CreateFramebuffer() {
+ 
+ void GfxRenderingAPIMetal::SetupScreenFramebuffer(uint32_t width, uint32_t height) {
+     mCurrentDrawable = nullptr;
++#ifdef __VISIONOS__
++    // The Compositor Services analogue of nextDrawable, called from the same
++    // place for the same reason: it waits only while the GPU still holds every
++    // texture in the shell's ring.
++    mScreenTexture = (MTL::Texture*)SpaghettiPad_RenderAcquireTexture();
++#else
+     mCurrentDrawable = mLayer->nextDrawable();
++    mScreenTexture = mCurrentDrawable->texture();
++#endif
+ 
+     bool msaa_enabled = Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger("gMSAAValue", 1) > 1;
+ 
+@@ -697,7 +759,7 @@ void GfxRenderingAPIMetal::SetupScreenFramebuffer(uint32_t width, uint32_t heigh
+ 
+     NS::AutoreleasePool* autorelease_pool = NS::AutoreleasePool::alloc()->init();
+ 
+-    tex.texture = mCurrentDrawable->texture();
++    tex.texture = mScreenTexture;
+ 
+     MTL::RenderPassDescriptor* render_pass_descriptor = MTL::RenderPassDescriptor::renderPassDescriptor();
+     render_pass_descriptor->colorAttachments()->object(0)->setTexture(tex.texture);
+@@ -750,9 +812,11 @@ void GfxRenderingAPIMetal::UpdateFramebufferParameters(int fb_id, uint32_t width
+     // Screen framebuffer is handled separately on a frame by frame basis
+     // see `SetupScreenFramebuffer`.
+     if (fb_id == 0) {
++#ifndef __VISIONOS__
+         int width, height;
+         SDL_GetRendererOutputSize(mRenderer, &width, &height);
+         mLayer->setDrawableSize({ CGFloat(width), CGFloat(height) });
++#endif
+ 
+         return;
+     }
+@@ -928,6 +992,26 @@ void GfxRenderingAPIMetal::ClearFramebuffer(bool color, bool depth) {
+     MTL::LoadAction origLoadAction = srcColorAttachment->loadAction();
+     if (color) {
+         srcColorAttachment->setLoadAction(MTL::LoadActionClear);
++#ifdef __VISIONOS__
++        // Temporary, one level below the eye stain. The triangle counters proved
++        // 2947 triangles per eye reach the rendering API; they did not prove any
++        // of them land in mGameFb, and ImGui compositing a black mGameFb looks
++        // exactly like ImGui not compositing at all. So every framebuffer clears
++        // to magenta for this run. If the wearer sees magenta, mGameFb reaches
++        // the eye and the geometry inside it is what is missing. If the view
++        // stays black, the path from mGameFb to the eye is broken despite the
++        // composite being correctly issued.
++        srcColorAttachment->setClearColor(MTL::ClearColor(1.0, 0.0, 1.0, 1.0));
++        {
++            static int logs = 0;
++            if (logs < 6) {
++                ++logs;
++                SPDLOG_WARN("[clear] framebuffer {} cleared to magenta ({}x{})", mCurrentFramebuffer,
++                            mTextures[framebuffer.mTextureId].width,
++                            mTextures[framebuffer.mTextureId].height);
++            }
++        }
++#endif
+     }
+ 
+     MTL::RenderPassDepthAttachmentDescriptor* srcDepthAttachment = framebuffer.mRenderPassDescriptor->depthAttachment();
+@@ -971,7 +1055,7 @@ void GfxRenderingAPIMetal::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_so
+ 
+     int target_texture_id = mFramebuffers[fb_id_target].mTextureId;
+     MTL::Texture* target_texture =
+-        target_texture_id == 0 ? mCurrentDrawable->texture() : mTextures[target_texture_id].texture;
++        target_texture_id == 0 ? mScreenTexture : mTextures[target_texture_id].texture;
+ 
+     // Workaround for detecting when transitioning to/from full screen mode.
+     if (source_texture->width() != target_texture->width() || source_texture->height() != target_texture->height()) {
+diff --git a/src/fast/backends/gfx_sdl2.cpp b/src/fast/backends/gfx_sdl2.cpp
+index 25e2e745..eec4ba9f 100644
+--- a/src/fast/backends/gfx_sdl2.cpp
++++ b/src/fast/backends/gfx_sdl2.cpp
+@@ -232,7 +232,7 @@ void GfxWindowBackendSDL2::SetFullscreenImpl(bool on, bool call_callback) {
+         }
+     }
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(__IOS__)
+     // Implement fullscreening with native macOS APIs
+     if (on != isNativeMacOSFullscreenActive(mWnd)) {
+         toggleNativeMacOSFullscreen(mWnd);
+@@ -635,7 +635,7 @@ void GfxWindowBackendSDL2::HandleEvents() {
+     }
+ 
+     // resync fullscreen state
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(__IOS__)
+     auto nextFullscreenState = isNativeMacOSFullscreenActive(mWnd);
+     if (mFullScreen != nextFullscreenState) {
+         mFullScreen = nextFullscreenState;
+diff --git a/src/fast/backends/gfx_visionos.cpp b/src/fast/backends/gfx_visionos.cpp
+new file mode 100644
+index 00000000..6cfc1e1b
+--- /dev/null
++++ b/src/fast/backends/gfx_visionos.cpp
+@@ -0,0 +1,281 @@
++//
++//  gfx_visionos.cpp
++//  libultraship
++//
++//  See gfx_visionos.h for why this backend exists at all.
++//
++#include "fast/backends/gfx_visionos.h"
++
++#ifdef __VISIONOS__
++
++#include "ship/Context.h"
++#include "ship/controller/controldeck/ControlDeck.h"
++#include "ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h"
++#include "ship/window/Window.h"
++#include "ship/window/gui/Gui.h"
++
++#include <SDL2/SDL.h>
++
++#include <ctime>
++#include <map>
++#include <string>
++
++namespace Fast {
++
++void GfxWindowBackendVisionOS::Init(const char* gameName, const char* apiName, bool startFullScreen, uint32_t width,
++                                    uint32_t height, int32_t posX, int32_t posY) {
++    // Every one of these describes a window, and there is no window. The
++    // surface's size comes from the shell and nothing else can change it.
++    (void)gameName;
++    (void)apiName;
++    (void)startFullScreen;
++    (void)width;
++    (void)height;
++    (void)posX;
++    (void)posY;
++
++    // Not SDL_INIT_VIDEO: that subsystem is not built. Events are, and the
++    // joystick subsystem the control deck initialises delivers through them.
++    SDL_InitSubSystem(SDL_INIT_EVENTS);
++
++    mNextFrame = std::chrono::steady_clock::now();
++
++    // The ImGui platform half of this is a no-op on visionOS (see Gui.cpp), but
++    // Gui::Init also creates the ImGui context and calls into the Metal backend,
++    // so it still has to happen here, at the same point in startup that the SDL2
++    // backend calls it.
++    Ship::GuiWindowInitData windowImpl;
++    windowImpl.Metal = { nullptr, nullptr };
++    Ship::Context::GetInstance()->GetWindow()->GetGui()->Init(windowImpl);
++}
++
++void GfxWindowBackendVisionOS::Close() {
++    mIsRunning = false;
++}
++
++void GfxWindowBackendVisionOS::SetKeyboardCallbacks(bool (*onKeyDown)(int scancode), bool (*onKeyUp)(int scancode),
++                                                    void (*onAllKeysUp)()) {
++    mOnKeyDown = onKeyDown;
++    mOnKeyUp = onKeyUp;
++    mOnAllKeysUp = onAllKeysUp;
++}
++
++void GfxWindowBackendVisionOS::SetMouseCallbacks(bool (*onMouseButtonDown)(int btn),
++                                                 bool (*onMouseButtonUp)(int btn)) {
++    mOnMouseButtonDown = onMouseButtonDown;
++    mOnMouseButtonUp = onMouseButtonUp;
++}
++
++void GfxWindowBackendVisionOS::SetFullscreenChangedCallback(void (*onFullscreenChanged)(bool isNowFullscreen)) {
++    mOnFullscreenChanged = onFullscreenChanged;
++}
++
++// A fully immersive space is the only mode this app has, so the engine is always
++// "fullscreen" and can never be asked to stop being it.
++void GfxWindowBackendVisionOS::SetFullscreen(bool fullscreen) {
++    (void)fullscreen;
++}
++
++bool GfxWindowBackendVisionOS::IsFullscreen() {
++    return true;
++}
++
++void GfxWindowBackendVisionOS::GetActiveWindowRefreshRate(uint32_t* refreshRate) {
++    // The compositor's rate, not this backend's own pacing. Upstream derives its
++    // interpolation target from this and then calls SetTargetFps with the
++    // result, so answering with mTargetFps would be answering with the previous
++    // answer — stable today only because the two happen to agree, and stuck at
++    // the lower of them the moment a user raises the interpolation setting.
++    *refreshRate = SpaghettiPad_RenderDisplayRate();
++}
++
++// No pointer exists in an immersive space; head and hand input arrive through
++// ARKit and GameController instead. These are stubs because there is nothing
++// truthful to return, not because the work was skipped.
++void GfxWindowBackendVisionOS::SetCursorVisibility(bool visible) {
++    (void)visible;
++}
++
++void GfxWindowBackendVisionOS::SetMousePos(int32_t posX, int32_t posY) {
++    (void)posX;
++    (void)posY;
++}
++
++void GfxWindowBackendVisionOS::GetMousePos(int32_t* x, int32_t* y) {
++    *x = 0;
++    *y = 0;
++}
++
++void GfxWindowBackendVisionOS::GetMouseDelta(int32_t* x, int32_t* y) {
++    *x = 0;
++    *y = 0;
++}
++
++void GfxWindowBackendVisionOS::GetMouseWheel(float* x, float* y) {
++    *x = 0.0f;
++    *y = 0.0f;
++}
++
++bool GfxWindowBackendVisionOS::GetMouseState(uint32_t btn) {
++    (void)btn;
++    return false;
++}
++
++void GfxWindowBackendVisionOS::SetMouseCapture(bool capture) {
++    (void)capture;
++}
++
++bool GfxWindowBackendVisionOS::IsMouseCaptured() {
++    return false;
++}
++
++void GfxWindowBackendVisionOS::GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) {
++    SpaghettiPad_RenderSurfaceSize(width, height);
++    *posX = 0;
++    *posY = 0;
++}
++
++void GfxWindowBackendVisionOS::HandleEvents() {
++    // The joystick and game controller subsystems refresh from inside the event
++    // pump, so this still has to run every frame even with no window events —
++    // and the queue has to be drained by someone or it grows without bound.
++    //
++    // Everything except SDL_CONTROLLERDEVICEADDED and SDL_CONTROLLERDEVICEREMOVED,
++    // which are not this backend's to consume. Ship::SDLAddRemoveDeviceEventHandler
++    // takes them out of the queue from inside the GUI update, and it is the only
++    // caller of ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads — the
++    // one function that opens an SDL gamepad and makes it visible to a port. A
++    // controller whose arrival event is eaten before that handler runs is never
++    // opened, so it never reaches the game, however well it is mapped.
++    //
++    // The SDL2 backend skips exactly these two, by peeping the ranges either side
++    // of them, and this is the same two ranges. They are adjacent in SDL_EventType
++    // — SDL_CONTROLLERDEVICEREMAPPED, which follows and which nothing here needs,
++    // falls in the upper range and is drained with the rest.
++    SDL_PumpEvents();
++    SDL_Event event;
++    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_CONTROLLERDEVICEADDED - 1) > 0) {
++    }
++    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_CONTROLLERDEVICEREMOVED + 1, SDL_LASTEVENT) > 0) {
++    }
++
++    ReportInputDevices();
++}
++
++// What the control deck holds, not what SDL enumerated: an unmapped pad is
++// enumerated but never opened, and the difference is the whole of why a
++// controller can appear to do nothing. Polled rather than driven by the events
++// above, because those belong to the handler that acts on them and reading the
++// result is the only way to see what it did.
++void GfxWindowBackendVisionOS::ReportInputDevices() {
++    auto context = Ship::Context::GetInstance();
++    if (context == nullptr || context->GetControlDeck() == nullptr) {
++        return;
++    }
++
++    auto manager = context->GetControlDeck()->GetConnectedPhysicalDeviceManager();
++    if (manager == nullptr) {
++        return;
++    }
++
++    // Ordered, so the same set of controllers always produces the same string and
++    // a reconnect that changes only SDL's instance ids is not reported as a change.
++    std::map<int32_t, std::string> byInstanceId;
++    for (const auto& [instanceId, name] : manager->GetConnectedSDLGamepadNames()) {
++        byInstanceId[instanceId] = name;
++    }
++
++    std::string names;
++    for (const auto& [instanceId, name] : byInstanceId) {
++        if (!names.empty()) {
++            names += ", ";
++        }
++        names += name;
++    }
++
++    if (mHasReportedInputDevices && names == mReportedInputDevices) {
++        return;
++    }
++
++    mHasReportedInputDevices = true;
++    mReportedInputDevices = names;
++    SpaghettiPad_InputDevicesChanged(static_cast<int>(byInstanceId.size()), names.c_str());
++}
++
++bool GfxWindowBackendVisionOS::IsFrameReady() {
++    // False while the immersive space is closed. The game loop then idles
++    // instead of rendering frames that nothing would ever show.
++    return SpaghettiPad_RenderIsLive() != 0;
++}
++
++// The compositor does not pace the engine: it presents whatever the latest
++// finished frame is, at the headset's rate, which is not the engine's. So the
++// engine paces itself, exactly as the SDL2 backend does when vsync is off.
++void GfxWindowBackendVisionOS::SyncFramerateWithTime() {
++    using namespace std::chrono;
++
++    const int fps = mTargetFps > 0 ? static_cast<int>(mTargetFps) : 60;
++    const auto interval = duration_cast<steady_clock::duration>(duration<double>(1.0 / fps));
++    const auto now = steady_clock::now();
++
++    // A long stall — the space closed, a mod loaded, the app was suspended —
++    // must not turn into a burst of catch-up frames.
++    if (mNextFrame < now - interval * 4 || mNextFrame > now + interval * 4) {
++        mNextFrame = now;
++    }
++
++    mNextFrame += interval;
++    const auto remaining = mNextFrame - now;
++    if (remaining > steady_clock::duration::zero()) {
++        const auto ns = duration_cast<nanoseconds>(remaining).count();
++        const timespec spec = { static_cast<time_t>(ns / 1000000000), static_cast<long>(ns % 1000000000) };
++        nanosleep(&spec, nullptr);
++    }
++}
++
++void GfxWindowBackendVisionOS::SwapBuffersBegin() {
++    SyncFramerateWithTime();
++}
++
++void GfxWindowBackendVisionOS::SwapBuffersEnd() {
++}
++
++double GfxWindowBackendVisionOS::GetTime() {
++    // Matches the SDL2 backend, whose callers all ignore the result.
++    return 0.0;
++}
++
++int GfxWindowBackendVisionOS::GetTargetFps() {
++    return mTargetFps;
++}
++
++void GfxWindowBackendVisionOS::SetTargetFps(int fps) {
++    mTargetFps = fps;
++}
++
++void GfxWindowBackendVisionOS::SetMaxFrameLatency(int latency) {
++    // The surface's ring depth is fixed by the shell.
++    (void)latency;
++}
++
++const char* GfxWindowBackendVisionOS::GetKeyName(int scancode) {
++    return SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode));
++}
++
++bool GfxWindowBackendVisionOS::CanDisableVsync() {
++    // There is no swap interval to turn off: the compositor decides when the
++    // headset displays, and this backend's own pacing is not it.
++    return false;
++}
++
++bool GfxWindowBackendVisionOS::IsRunning() {
++    return mIsRunning;
++}
++
++void GfxWindowBackendVisionOS::Destroy() {
++    SDL_QuitSubSystem(SDL_INIT_EVENTS);
++}
++
++} // namespace Fast
++
++#endif
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 028c3cc4..00157841 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -28,6 +28,7 @@
+ #include "fast/lus_gbi.h"
+ #include "fast/backends/gfx_window_manager_api.h"
+ #include "fast/backends/gfx_rendering_api.h"
++#include "fast/backends/gfx_visionos.h"
+ 
+ #include "ship/window/gui/Gui.h"
+ #include "ship/resource/ResourceManager.h"
+@@ -447,6 +448,8 @@ void Interpreter::TextureCacheClear() {
+     }
+     mTextureCache.map.clear();
+     mTextureCache.lru.clear();
++    mTextureCache.total_bytes = 0;
++    mTextureCache.last_inserted = nullptr;
+     // Pre-allocate buckets so the map never rehashes during normal operation.
+     // Rehashing invalidates all iterators, including those stored in LRU entries.
+     mTextureCache.map.reserve(TEXTURE_CACHE_MAX_SIZE);
+@@ -454,6 +457,78 @@ void Interpreter::TextureCacheClear() {
+     std::fill(std::begin(mRenderingState.mTextures), std::end(mRenderingState.mTextures), nullptr);
+ }
+ 
++// How many bytes of textures the cache may hold. The entry bound above was a
++// byte bound only while every texture was N64-sized — kilobytes each. A 4K
++// replacement pack makes single entries cost tens of megabytes, and a promo
++// loop cycling courses filled 1024 such entries until the device's jetsam
++// killed the process at its per-process limit — measured on an Apple Vision
++// Pro, `killed by jetsam reason per-process-limit`, minutes into an otherwise
++// healthy 90 Hz session. One gigabyte holds several courses' worth of 4K
++// textures, so eviction stays off the hot path, and leaves the rest of the
++// process's budget for the game, the decoded resources still loading, and the
++// compositor.
++constexpr size_t kTextureCacheBudgetBytes = 1024ull * 1024 * 1024;
++
++void Interpreter::EvictTextureCacheLru() {
++    TextureCacheMap::iterator it = mTextureCache.lru.front().it;
++    mTextureCache.free_texture_ids.push_back(it->second.texture_id);
++    for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
++        if (mRenderingState.mTextures[j] == &*it) {
++            mRenderingState.mTextures[j] = nullptr;
++        }
++    }
++    mTextureCache.total_bytes -= it->second.bytes;
++    if (!it->second.resource_path.empty()) {
++        // The GPU copy this entry owned is gone; the decoded CPU copy in the
++        // resource cache would otherwise outlive it forever, because nothing
++        // in this port ever unloads a resource. Dropping the cache's owning
++        // reference frees the pixels once nothing else holds them — the RDP's
++        // loaded_texture slots keep a shared_ptr for anything still in flight
++        // — and a texture drawn again later simply reloads from the archive.
++        Ship::Context::GetInstance()->GetResourceManager()->UnloadResource(it->second.resource_path);
++    }
++    if (mTextureCache.last_inserted == &*it) {
++        mTextureCache.last_inserted = nullptr;
++    }
++    mTextureCache.map.erase(it);
++    mTextureCache.lru.pop_front();
++}
++
++void Interpreter::RecordTextureUpload(const RawTexMetadata* metadata, uint32_t origSizeBytes) {
++    TextureCacheNode* node = mTextureCache.last_inserted;
++    mTextureCache.last_inserted = nullptr;
++    if (node == nullptr) {
++        return;
++    }
++
++    // An accounting estimate, not a measurement: an archive resource's pixels
++    // are its stated dimensions at four bytes each — that is what the import
++    // paths upload — and a raw N64 texture is bounded by its TMEM load
++    // expanded to RGBA32, where even 4-bit data grows eightfold. Overcounting
++    // a kilobyte texture is harmless; what matters is that a 64 MiB one
++    // counts as 64 MiB.
++    size_t bytes;
++    mTextureCache.total_bytes -= node->second.bytes;
++    node->second.resource_path.clear();
++    if (metadata != nullptr && metadata->resource != nullptr) {
++        bytes = (size_t)metadata->width * metadata->height * 4;
++        node->second.resource_path = metadata->resource->GetInitData()->Path;
++    } else {
++        bytes = (size_t)origSizeBytes * 8;
++    }
++    node->second.bytes = bytes;
++    mTextureCache.total_bytes += bytes;
++
++    while (mTextureCache.total_bytes > kTextureCacheBudgetBytes && !mTextureCache.lru.empty()) {
++        if (&*mTextureCache.lru.front().it == node) {
++            // A single texture larger than the whole budget; keep it — it is
++            // being drawn right now — and evict nothing else this round.
++            break;
++        }
++        EvictTextureCacheLru();
++    }
++}
++
+ void Interpreter::ShaderCacheClear() {
+     mRapi->ClearShaderCache();
+ }
+@@ -472,14 +547,7 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
+ 
+     if (mTextureCache.map.size() >= TEXTURE_CACHE_MAX_SIZE) {
+         // Remove the texture that was least recently used
+-        it = mTextureCache.lru.front().it;
+-        mTextureCache.free_texture_ids.push_back(it->second.texture_id);
+-        for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
+-            if (mRenderingState.mTextures[j] == &*it)
+-                mRenderingState.mTextures[j] = nullptr;
+-        }
+-        mTextureCache.map.erase(it);
+-        mTextureCache.lru.pop_front();
++        EvictTextureCacheLru();
+     }
+ 
+     uint32_t texture_id;
+@@ -494,6 +562,9 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
+     TextureCacheNode* node = &*it;
+     node->second.texture_id = texture_id;
+     node->second.lru_location = mTextureCache.lru.insert(mTextureCache.lru.end(), { it });
++    // The upload that follows this miss books its bytes against this entry;
++    // see RecordTextureUpload.
++    mTextureCache.last_inserted = node;
+ 
+     mRapi->SelectTexture(i, texture_id);
+     mRapi->SetSamplerParameters(i, false, 0, 0);
+@@ -1225,12 +1296,14 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+ 
+     if ((texFlags & TEX_FLAG_LOAD_AS_IMG) != 0) {
+         ImportTextureImg(tile, importReplacement);
++        RecordTextureUpload(metadata, origSizeBytes);
+         return;
+     }
+ 
+     // if load as raw is set then we load_raw();
+     if ((texFlags & TEX_FLAG_LOAD_AS_RAW) != 0) {
+         ImportTextureRaw(tile, importReplacement);
++        RecordTextureUpload(metadata, origSizeBytes);
+         return;
+     }
+ 
+@@ -1289,6 +1362,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+             SPDLOG_ERROR("Invalid texture format. Fmt = {}", fmt);
+             break;
+     }
++    RecordTextureUpload(metadata, origSizeBytes);
+ }
+ 
+ void Interpreter::ImportTextureMask(int i, int tile) {
+@@ -1383,6 +1457,513 @@ void Interpreter::CalculateNormalDir(const F3DLight_t* light, float coeffs[3]) {
+     Interpreter::NormalizeVector(coeffs);
+ }
+ 
++#ifdef __VISIONOS__
++
++// --------------------------------------------------------------------- Mode B
++//
++// Everything here answers one question: what should replace the projection
++// matrix the game just loaded, so that the world it draws is the world the
++// wearer is sitting in rather than a picture hanging in front of them.
++//
++// The substitution happens at the projection and nowhere else, which is what
++// makes it tractable. A vertex reaches the projection already in the game's own
++// camera space — the modelview stack has taken it there — and Mario Kart 64's
++// camera space is, axis for axis, what Compositor Services calls right-up-back:
++// x right, y up, forward down -z. So the game's camera and the wearer's head can
++// simply be declared the same thing, and the only work left is to say where each
++// eye is relative to that head and what shape its frustum is.
++//
++// What is deliberately *not* done here: nothing touches the modelview stack, the
++// vertex transform, lighting, or clipping. The game keeps drawing the game.
++
++namespace {
++
++// Beyond this the near or far plane recovered from a projection is not believed
++// and the game's own matrix is used unchanged. A degenerate projection is a real
++// thing in N64 display lists — matrices get built from uninitialised memory
++// during transitions — and one frame of flat rendering is a far better failure
++// than one frame of geometry smeared across the wearer's field of view.
++constexpr float kMatrixEpsilon = 1e-6f;
++
++// The nearest the near plane is allowed to sit, in metres. Mario Kart 64 chooses
++// a near plane for a camera bolted behind a kart, which is not a camera anyone
++// can lean forward on. In Mode B they can, so the plane is pulled in far enough
++// that leaning does not open a hole in the world. Fast3D's Metal depth buffer is
++// 32-bit float, so what this costs in depth precision is close to nothing.
++constexpr float kNearestNearPlaneMetres = 0.12f;
++
++// Where the HUD hangs, in metres. Lap counter, positions and item box are drawn
++// in orthographic passes with no depth of their own; left alone they land at
++// infinity, which is the one distance guaranteed to fight every other thing in
++// view. Just beyond arm's length is far enough not to strain and near enough to
++// read.
++constexpr float kHudDistanceMetres = 2.2f;
++
++// How wide the HUD's panel is at that distance, in metres. Mode A hangs a
++// 1.6 m screen 2.0 m ahead and a wearer has read menus on it in comfort, so the
++// panel matches that arc rather than inventing a new number to test.
++constexpr float kHudPanelWidthMetres = 1.76f;
++
++// Where scene backdrops go — the skybox above all. Far enough that its
++// disparity is as close to nothing as the eyes can tell, which is where a sky
++// belongs, and comfortably beyond every distance the game's own world renders
++// at under any scale the slider offers.
++constexpr float kBackdropDistanceMetres = 60.0f;
++
++// Half the backdrop panel's angular width, as a tangent: 2.0 is ±63 degrees,
++// wider than the widest eye tangent a headset has reported (1.732), so the
++// panel covers the whole view with margin at the recentre-forward pose. The
++// game drew its sky for a narrower camera, so the picture is stretched; on
++// gradient skies that is invisible, and a stretched cloud is a far smaller
++// wrong than a sky card floating nearer than the track it is behind.
++constexpr float kBackdropHalfWidthTangent = 2.0f;
++
++// True for a projection that divides by depth. Orthographic matrices — the HUD,
++// the 2D overlays, the framebuffer blits — have a constant w, and replacing
++// theirs with a frustum would be replacing a deliberate flatness with a mistake.
++//
++// The vertical scale is tested alongside the depth divide, which is what RT64's
++// own classifier does in RSP::getCurrentProjectionType. A matrix can divide by
++// depth and still be degenerate — collapsed to a point, or assembled from
++// uninitialised memory during a transition, which is an ordinary event in an N64
++// display list — and no frustum can be recovered from one. Reading such a matrix
++// as flat costs a frame of the HUD's convergence; reading it as perspective costs
++// a frame of geometry smeared across the wearer's field of view. The two failures
++// are not equally priced, so the test leans towards flat.
++bool IsPerspectiveProjection(const float projection[4][4]) {
++    return fabsf(projection[2][3]) > kMatrixEpsilon && fabsf(projection[3][3]) < kMatrixEpsilon &&
++           fabsf(projection[1][1]) > kMatrixEpsilon;
++}
++
++// Recovers the near and far planes the game asked for, in game units.
++//
++// They are kept rather than replaced because they are the game's statement about
++// its own world: how far it intends to draw, and how it has budgeted its depth
++// buffer. The eye's frustum changes the *shape* of the view, which belongs to the
++// headset; it has no opinion about draw distance, which does not.
++//
++// F3D projections are OpenGL-convention, so with the w row normalised to -1 the
++// depth row reads a = -(f+n)/(f-n) and b = -2fn/(f-n), which inverts exactly.
++bool RecoverNearFar(const float projection[4][4], float* nearPlane, float* farPlane) {
++    const float w = -projection[2][3];
++    if (fabsf(w) < kMatrixEpsilon) {
++        return false;
++    }
++
++    const float a = projection[2][2] / w;
++    const float b = projection[3][2] / w;
++    if (fabsf(a - 1.0f) < kMatrixEpsilon || fabsf(a + 1.0f) < kMatrixEpsilon) {
++        return false;
++    }
++
++    const float recoveredNear = b / (a - 1.0f);
++    const float recoveredFar = b / (a + 1.0f);
++    if (!(recoveredNear > 0.0f) || !(recoveredFar > recoveredNear) || !std::isfinite(recoveredNear) ||
++        !std::isfinite(recoveredFar)) {
++        return false;
++    }
++
++    *nearPlane = recoveredNear;
++    *farPlane = recoveredFar;
++    return true;
++}
++
++// One eye's frustum, in Fast3D's conventions rather than Metal's.
++//
++// Two conventions have to be honoured and they are easy to conflate. Fast3D
++// expects clip z spanning [-w, w] and remaps it to [0, w] itself, on the CPU, in
++// GfxSpTri1 — so a Metal-convention projection handed straight over would be
++// remapped a second time and put every polygon in the front half of the depth
++// buffer. And the layout is row-vector: element [i][j] multiplies input
++// component i into output component j, which is the transpose of the usual
++// textbook form and, conveniently, exactly simd's column-major memory order.
++//
++// The tangents are not symmetric. A Vision Pro cants each eye's frustum outwards,
++// and a symmetric perspective built from an average would be wrong in a way that
++// looks almost right: the picture would be sharp, the depth plausible, and the
++// two eyes would disagree about where the horizon is.
++void BuildEyeFrustum(const float tangents[4], float nearPlane, float farPlane, float xScale,
++                     float frustum[4][4]) {
++    const float left = tangents[0];
++    const float right = tangents[1];
++    const float up = tangents[2];
++    const float down = tangents[3];
++
++    const float width = left + right;
++    const float height = up + down;
++
++    memset(frustum, 0, sizeof(float) * 16);
++    if (width < kMatrixEpsilon || height < kMatrixEpsilon) {
++        return;
++    }
++
++    // xScale carries the widescreen correction GfxSpVertex applies after this
++    // matrix has done its work. That correction exists to letterbox a 4:3 game
++    // onto a wider window, and there is no window here — the frustum already is
++    // the shape of the eye. Cancelling it in advance is cheaper and far less
++    // invasive than teaching the vertex path about a mode it otherwise ignores.
++    frustum[0][0] = (2.0f / width) * xScale;
++    frustum[2][0] = ((right - left) / width) * xScale;
++    frustum[1][1] = 2.0f / height;
++    frustum[2][1] = (up - down) / height;
++
++    const float depth = farPlane - nearPlane;
++    frustum[2][2] = -(farPlane + nearPlane) / depth;
++    frustum[3][2] = -2.0f * farPlane * nearPlane / depth;
++    frustum[2][3] = -1.0f;
++}
++
++} // namespace
++
++// Takes the eye's geometry for this frame and puts it in the terms the
++// interpreter works in: game units rather than metres, row vectors rather than
++// column ones.
++void Interpreter::BeginStereoEye(const SpaghettiPadEyeView& view, bool lastEye) {
++    mStereoLastEye = lastEye;
++    if (!view.valid) {
++        mStereoActive = false;
++        return;
++    }
++
++    // Coming from a frame that was not in stereo, the shadow copy starts as
++    // whatever the game last loaded. SpReset does not clear P_matrix, so a
++    // projection survives from frame to frame and a display list is entitled to
++    // multiply onto one it set earlier; seeding here is what keeps that true
++    // across the switch into Mode B. The factorisation is seeded conservatively
++    // — the survivor counts as the load, with nothing multiplied since — which
++    // only matters for draws before this display list's first projection load,
++    // and Mario Kart 64 loads one at the top of every frame.
++    if (!mStereoActive) {
++        memcpy(mStereoGameProjection, mRsp->P_matrix, sizeof(mStereoGameProjection));
++        memcpy(mStereoGameLoaded, mRsp->P_matrix, sizeof(mStereoGameLoaded));
++        mStereoGameHasPre = false;
++    }
++
++    // Per-eye, not per-entry: whether a perspective projection has been loaded
++    // yet is what separates a backdrop orthographic pass from an overlay one,
++    // and each eye walks the display list from its top.
++    mStereoEyeSawPerspective = false;
++
++    // No transpose: Fast3D's [i][j] and simd's column-major [column][row] are the
++    // same sixteen floats in the same order, because Fast3D multiplies its row
++    // vectors on the left. The one substantive conversion is below.
++    memcpy(mStereoEyeFromRecentre, view.eyeFromRecentre, sizeof(mStereoEyeFromRecentre));
++    memcpy(mStereoTangents, view.tangents, sizeof(mStereoTangents));
++
++    // The rotation is unitless and carries over as it is. The translation is a
++    // distance, and it arrives in metres while everything it will be added to is
++    // in game units.
++    const float metresPerUnit = SpaghettiPad_RenderWorldScale();
++    if (metresPerUnit > kMatrixEpsilon) {
++        mStereoEyeFromRecentre[3][0] /= metresPerUnit;
++        mStereoEyeFromRecentre[3][1] /= metresPerUnit;
++        mStereoEyeFromRecentre[3][2] /= metresPerUnit;
++    }
++
++    // Where the HUD goes: locked to the room rather than to the face. The panel
++    // is a fixed object in the recentre frame — a 4:3 rectangle
++    // kHudPanelWidthMetres across, kHudDistanceMetres ahead of where the wearer
++    // was when the world was placed, at their eye height — and each eye finds it
++    // by projecting the panel's centre through its own full pose, rotation
++    // included, every frame.
++    //
++    // The previous placement was head-anchored: the panel centred on each eye's
++    // frustum axis, converged by a shift computed from the eye translations
++    // alone. That approximation ignored the rotation in the eye transforms — a
++    // Vision Pro cants its eye views, and the interpreter's own frustum path
++    // honours that cant — so the HUD's per-eye disparity matched no single
++    // distance, and the wearer reported it pressed against their face. A real
++    // point through the real matrices makes the disparity exact by
++    // construction, and a panel that stays put in the room reads at its
++    // distance the way Mode A's screen already demonstrably does. It also means
++    // the HUD behaves like a cockpit instrument: look away and it leaves the
++    // view instead of following.
++    const float halfWidth = 0.5f * (mStereoTangents[0] + mStereoTangents[1]);
++    const float halfHeight = 0.5f * (mStereoTangents[2] + mStereoTangents[3]);
++    const auto placePanel = [&](float distanceMetres, float panelHalfWidthMetres,
++                                float centre[2], float scale[2]) {
++        centre[0] = 0.0f;
++        centre[1] = 0.0f;
++        scale[0] = 0.0f;
++        scale[1] = 0.0f;
++        if (!(metresPerUnit > kMatrixEpsilon) || !(halfWidth > kMatrixEpsilon) ||
++            !(halfHeight > kMatrixEpsilon)) {
++            return;
++        }
++        // The panel's centre in the recentre frame, in game units, through the
++        // eye transform. Row-vector layout — eye = point · M — and the point's
++        // x and y are zero, so only the z row and the translation row survive.
++        const float panelZ = -distanceMetres / metresPerUnit;
++        const float ex = panelZ * mStereoEyeFromRecentre[2][0] + mStereoEyeFromRecentre[3][0];
++        const float ey = panelZ * mStereoEyeFromRecentre[2][1] + mStereoEyeFromRecentre[3][1];
++        const float ez = panelZ * mStereoEyeFromRecentre[2][2] + mStereoEyeFromRecentre[3][2];
++        const float viewDepth = -ez;
++        // A panel behind the eye — the wearer has turned away from it — keeps
++        // the zero scale above, which collapses every 2D draw to a point that
++        // rasterizes nothing. A HUD behind the head should be nowhere, not
++        // mirrored back into view.
++        if (viewDepth > kMatrixEpsilon) {
++            // Inverting this eye's asymmetric frustum: an eye-space point lands
++            // at NDC (x/depth − (R−L)/2) / halfWidth, which is the same centre
++            // and offset BuildEyeFrustum encodes, read backwards.
++            centre[0] =
++                (ex / viewDepth - 0.5f * (mStereoTangents[1] - mStereoTangents[0])) / halfWidth;
++            centre[1] =
++                (ey / viewDepth - 0.5f * (mStereoTangents[2] - mStereoTangents[3])) / halfHeight;
++            const float panelHalfWidthUnits = panelHalfWidthMetres / metresPerUnit;
++            scale[0] = (panelHalfWidthUnits / viewDepth) / halfWidth;
++            // 4:3, matching the space the game draws its 2D in.
++            scale[1] = (panelHalfWidthUnits * 0.75f / viewDepth) / halfHeight;
++        }
++    };
++    placePanel(kHudDistanceMetres, 0.5f * kHudPanelWidthMetres, mStereoHudCentre,
++               mStereoHudScale);
++    placePanel(kBackdropDistanceMetres,
++               kBackdropDistanceMetres * kBackdropHalfWidthTangent, mStereoBgCentre,
++               mStereoBgScale);
++
++    mStereoActive = true;
++}
++
++void Interpreter::EndStereoEye() {
++    if (!mStereoActive) {
++        return;
++    }
++
++    // Temporary, and reported here because this is the one point that knows an
++    // eye has finished. "drawn" is what reached the rendering API.
++    if (mEyeDiagnostics < 6) {
++        ++mEyeDiagnostics;
++        SPDLOG_WARN("[tris] eye {}: {} triangles, {} clipped away, {} culled, {} drawn",
++                    mEyeDiagnostics, mTriangleTotal, mTriangleClipRejected, mTriangleCullRejected,
++                    mTriangleTotal - mTriangleClipRejected - mTriangleCullRejected);
++    }
++    mTriangleTotal = 0;
++    mTriangleClipRejected = 0;
++    mTriangleCullRejected = 0;
++    // What the next pass over this display list should expect. Both eyes run
++    // the same list, so "did the previous pass ever load a perspective
++    // projection" predicts the next one exactly; across a scene change it is
++    // wrong for a single eye and then right again.
++    mStereoLastEyeHadPerspective = mStereoEyeSawPerspective;
++    // Leave the game's own projection where the game expects to find it. Whoever
++    // draws next — the second eye, a Mode A frame, the GUI-only path — is
++    // entitled to assume P_matrix means what the display list last said it
++    // means, and only this function knows that it currently does not.
++    memcpy(mRsp->P_matrix, mStereoGameProjection, sizeof(mStereoGameProjection));
++    if (mRsp->modelview_matrix_stack_size > 0) {
++        MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1],
++                  mRsp->P_matrix);
++    }
++    mStereoActive = false;
++}
++
++// Builds what replaces one projection matrix. Called for every projection the
++// game loads or multiplies while an eye is open, because the answer depends on
++// what the game asked for and not only on which eye is being drawn.
++//
++// The classification reads mStereoGameLoaded — the matrix the last LOAD
++// carried — never the composed product in `game`. Mario Kart 64 multiplies its
++// camera's lookAt onto the projection stack, and camera-times-perspective does
++// not classify as perspective: its w row carries the camera translation. An
++// earlier build classified the product, and every draw after the camera MUL —
++// the entire racing world — silently took the orthographic path below, flat on
++// the HUD panel, while the LOAD a moment earlier had classified and logged
++// correctly. That is what a wearer measured as "everything is too close" and
++// "turning my head does nothing": they were looking at a projected photograph
++// of the world, not the world.
++void Interpreter::StereoProjection(const float game[4][4], float replacement[4][4]) {
++    if (!IsPerspectiveProjection(mStereoGameLoaded)) {
++        // The 2D passes keep their own matrix and land on a panel: scaled to
++        // its extent and centred where this eye's projection of the panel
++        // fell, all in clip space as multiples of the pass's own w.
++        // Convergence is inside the centre — BeginStereoEye projected a real
++        // point through this eye's real pose — so nothing is added on top.
++        //
++        // Which panel depends on what the pass is. An orthographic pass before
++        // the frame's first perspective load, in a frame whose previous pass
++        // had one, is scenery — the skybox, drawn behind a world that now has
++        // real depths, which a card two metres out would float in front of.
++        // Everything else — the HUD, and every 2D pass of a frame with no
++        // perspective in it at all — is overlay, and belongs at reading
++        // distance.
++        const bool backdrop = !mStereoEyeSawPerspective && mStereoLastEyeHadPerspective;
++        const float* centre = backdrop ? mStereoBgCentre : mStereoHudCentre;
++        const float* scale = backdrop ? mStereoBgScale : mStereoHudScale;
++
++        // The x terms are divided by the aspect factor GfxSpVertex will
++        // multiply back in — the panel's shape comes from the eye's tangents,
++        // and letterboxing meant for a desktop window has no business
++        // stretching it (at the eye's near-square aspect it *widened*
++        // everything by a third).
++        memcpy(replacement, game, sizeof(float) * 16);
++        float xCancel = 1.0f;
++        if (mCurDimensions.height > 0 && mCurDimensions.width > 0) {
++            xCancel =
++                ((float)mCurDimensions.width / (float)mCurDimensions.height) / (4.0f / 3.0f);
++        }
++        for (int i = 0; i < 4; ++i) {
++            replacement[i][0] = (scale[0] * game[i][0] + centre[0] * game[i][3]) * xCancel;
++            replacement[i][1] = scale[1] * game[i][1] + centre[1] * game[i][3];
++        }
++        return;
++    }
++
++    mStereoEyeSawPerspective = true;
++
++    float nearPlane = 0.0f;
++    float farPlane = 0.0f;
++    if (!RecoverNearFar(mStereoGameLoaded, &nearPlane, &farPlane)) {
++        memcpy(replacement, game, sizeof(float) * 16);
++        return;
++    }
++
++    const float metresPerUnit = SpaghettiPad_RenderWorldScale();
++    // Temporary: the clamp is disabled for this run. Pulling the near plane from
++    // the game's 100 units to 2.18 compresses everything visible into NDC z
++    // [0.95, 1.0], and while that should not blank a frame it is the one input to
++    // this matrix that is wildly different from what the game asked for. Keeping
++    // the game's own near costs the ability to lean into the world and settles
++    // whether the depth range is implicated at all.
++    constexpr bool kClampNearPlane = false;
++    if (kClampNearPlane && metresPerUnit > kMatrixEpsilon) {
++        const float nearestAllowed = kNearestNearPlaneMetres / metresPerUnit;
++        if (nearPlane > nearestAllowed && farPlane > nearestAllowed) {
++            nearPlane = nearestAllowed;
++        }
++    }
++
++    // AdjXForAspectRatio's factor, cancelled in advance. Read from the same
++    // dimensions it reads, so the two cannot drift apart.
++    float xScale = 1.0f;
++    if (mCurDimensions.height > 0 && mCurDimensions.width > 0) {
++        xScale = ((float)mCurDimensions.width / (float)mCurDimensions.height) / (4.0f / 3.0f);
++    }
++
++    float frustum[4][4];
++    BuildEyeFrustum(mStereoTangents, nearPlane, farPlane, xScale, frustum);
++    float eyeProjection[4][4];
++    MatrixMul(eyeProjection, mStereoEyeFromRecentre, frustum);
++    if (mStereoGameHasPre) {
++        // The game's camera, exactly as the game multiplied it onto its
++        // projection stack, applied ahead of the eye. This is the whole of the
++        // head-tracking contract: the camera's frame is where the game says it
++        // is — forward follows the race — and the wearer's pose, inside
++        // mStereoEyeFromRecentre, looks around from there.
++        MatrixMul(replacement, mStereoGamePre, eyeProjection);
++    } else {
++        memcpy(replacement, eyeProjection, sizeof(float) * 16);
++    }
++
++    // Temporary. Mode B renders at rate on hardware and shows black, with the
++    // engine known good — the same frames drawn flat are correct and audible. The
++    // substitution above is therefore the only suspect, and nothing about it is
++    // logged, so this prints its inputs, its output, and what it does to points
++    // that must be on screen. Four calls covers both eyes twice.
++    if (mStereoDiagnostics < 4) {
++        ++mStereoDiagnostics;
++
++        // Where the game's own projection puts a point is the control: it is what
++        // the flat screen draws, and the flat screen is correct.
++        const float probes[3][3] = {
++            { 0.0f, 0.0f, -100.0f },   // straight ahead, near
++            { 0.0f, 0.0f, -1000.0f },  // straight ahead, mid
++            { 200.0f, 100.0f, -500.0f } // off-axis
++        };
++
++        SPDLOG_WARN("[modeB] eye pass {}: near {:.3f} far {:.1f} (recovered), scale "
++                    "{:.4f} m/unit, xScale {:.4f}, dims {}x{}",
++                    mStereoDiagnostics, nearPlane, farPlane, metresPerUnit, xScale,
++                    mCurDimensions.width, mCurDimensions.height);
++        SPDLOG_WARN("[modeB] tangents L{:.3f} R{:.3f} U{:.3f} D{:.3f}", mStereoTangents[0],
++                    mStereoTangents[1], mStereoTangents[2], mStereoTangents[3]);
++        for (int row = 0; row < 4; ++row) {
++            SPDLOG_WARN("[modeB] eyeFromRecentre[{}] {:+.5f} {:+.5f} {:+.5f} {:+.5f}", row,
++                        mStereoEyeFromRecentre[row][0], mStereoEyeFromRecentre[row][1],
++                        mStereoEyeFromRecentre[row][2], mStereoEyeFromRecentre[row][3]);
++        }
++        for (int row = 0; row < 4; ++row) {
++            SPDLOG_WARN("[modeB] game[{}] {:+.5f} {:+.5f} {:+.5f} {:+.5f}   ->   "
++                        "replacement[{}] {:+.5f} {:+.5f} {:+.5f} {:+.5f}",
++                        row, game[row][0], game[row][1], game[row][2], game[row][3], row,
++                        replacement[row][0], replacement[row][1], replacement[row][2],
++                        replacement[row][3]);
++        }
++        for (const auto& probe : probes) {
++            float out[2][4];
++            const float* matrices[2] = { &game[0][0], &replacement[0][0] };
++            for (int which = 0; which < 2; ++which) {
++                for (int col = 0; col < 4; ++col) {
++                    out[which][col] = probe[0] * matrices[which][0 * 4 + col] +
++                                      probe[1] * matrices[which][1 * 4 + col] +
++                                      probe[2] * matrices[which][2 * 4 + col] +
++                                      1.0f * matrices[which][3 * 4 + col];
++                }
++            }
++            // NDC is what decides whether a vertex survives. A w at or below zero
++            // is behind the eye and rejected outright; anything outside [-1, 1] on
++            // x or y is off the side of the view, and Fast3D's z is [-w, w] here
++            // because the remap to [0, w] happens later, in GfxSpTri1.
++            SPDLOG_WARN("[modeB] probe ({:.0f},{:.0f},{:.0f}) game ndc "
++                        "({:+.3f},{:+.3f},{:+.3f}) w {:+.2f}  |  replacement ndc "
++                        "({:+.3f},{:+.3f},{:+.3f}) w {:+.2f}",
++                        probe[0], probe[1], probe[2], out[0][0] / out[0][3],
++                        out[0][1] / out[0][3], out[0][2] / out[0][3], out[0][3],
++                        out[1][0] / out[1][3], out[1][1] / out[1][3], out[1][2] / out[1][3],
++                        out[1][3]);
++        }
++    }
++}
++
++// How far to move a rectangle primitive sideways for the eye currently open.
++//
++// This exists because a rectangle is not an orthographic draw, and the difference
++// costs more in stereo than anywhere else. RT64 gives rectangles a projection type
++// of their own — Projection::Type::Rectangle, listed beside Orthographic rather
++// than inside it — and Fast3D agrees with that in its behaviour without ever
++// naming it: GfxDrawRectangle writes clip coordinates straight into
++// loaded_vertices and calls GfxSpTri1 with is_rect set, so P_matrix is never
++// consulted and StereoProjection above never runs for a single one of them.
++//
++// Left alone, then, every rectangle is emitted at identical coordinates in both
++// eyes. Identical coordinates are zero disparity, and zero disparity is a thing
++// the eyes converge on at infinity — while the world it is drawn over sits a few
++// metres away. That is precisely the fight the orthographic HUD's shift was
++// written to avoid, and it was only ever half won: much of what a player actually
++// reads mid-race in Mario Kart 64 — lap, position, the item window — arrives as a
++// texture rectangle rather than as an orthographic quad.
++//
++// Three kinds of rectangle must not be moved:
++//
++//   - Fill-cycle rectangles. G_CYC_FILL is how this game clears; init_z_buffer
++//     and its splitscreen counterpart point the colour image at the z-buffer and
++//     fill it. A clear has no distance to be placed at, and moving one leaves a
++//     band of the previous frame's contents along the edge it moved away from.
++//   - Rectangles drawn into an off-screen framebuffer. The shift belongs to the
++//     draw that reaches the wearer's eye, and that is the later one that composites
++//     this target onto the screen. Applying it here as well would place the
++//     convergence inside a texture and then converge the texture again.
++//
++// Full-width rectangles used to be a third exclusion, on the reasoning that a
++// background belongs at infinity and identity coordinates put it there. They do
++// not. Identity maps the image across each eye's *own* NDC, and the eyes' views
++// are asymmetric mirrored frustums with a rotational cant: the same coordinates
++// mean visibly different directions in the two eyes, skewed opposite ways —
++// which a wearer reported, precisely, as the main menu's backdrop being
++// "reversed" in the right eye. The blue-sky backdrop is drawn as exactly such
++// full-width strips. Full-width rectangles are still recognised — they are
++// backgrounds by construction — but they now land on the backdrop panel, which
++// is a real object in the recentre frame, consistent between the eyes, and
++// wider than the view, so the unfilled-band worry the old exclusion answered
++// does not arise.
++bool Interpreter::StereoRectOnPanel(float ndcLeft, float ndcRight, uint32_t cycleType) const {
++    (void)ndcLeft;
++    (void)ndcRight;
++    return mStereoActive && cycleType != G_CYC_FILL && !mFbActive;
++}
++
++#endif // __VISIONOS__
++
+ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
+     float matrix[4][4];
+ 
+@@ -1416,11 +1997,41 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
+     const int8_t mtx_push = get_attr(MTX_PUSH);
+ 
+     if (parameters & mtx_projection) {
++#ifdef __VISIONOS__
++        if (mStereoActive) {
++            // The game's matrix is still tracked in full — it is what
++            // EndStereoEye restores, and what a later multiply has to compound
++            // onto — but it is also tracked factorised: the LOAD apart from
++            // the MULs since. Mario Kart 64's camera arrives as a MUL onto
++            // this stack, and only the factorisation lets StereoProjection
++            // classify the perspective the game loaded while keeping the
++            // camera the game multiplied.
++            if (parameters & mtx_load) {
++                memcpy(mStereoGameProjection, matrix, sizeof(matrix));
++                memcpy(mStereoGameLoaded, matrix, sizeof(matrix));
++                mStereoGameHasPre = false;
++            } else {
++                MatrixMul(mStereoGameProjection, matrix, mStereoGameProjection);
++                if (mStereoGameHasPre) {
++                    MatrixMul(mStereoGamePre, matrix, mStereoGamePre);
++                } else {
++                    memcpy(mStereoGamePre, matrix, sizeof(matrix));
++                    mStereoGameHasPre = true;
++                }
++            }
++            StereoProjection(mStereoGameProjection, mRsp->P_matrix);
++        } else if (parameters & mtx_load) {
++            memcpy(mRsp->P_matrix, matrix, sizeof(matrix));
++        } else {
++            MatrixMul(mRsp->P_matrix, matrix, mRsp->P_matrix);
++        }
++#else
+         if (parameters & mtx_load) {
+             memcpy(mRsp->P_matrix, matrix, sizeof(matrix));
+         } else {
+             MatrixMul(mRsp->P_matrix, matrix, mRsp->P_matrix);
+         }
++#endif
+     } else { // G_MTX_MODELVIEW
+         if ((parameters & mtx_push) && mRsp->modelview_matrix_stack_size < 11) {
+             ++mRsp->modelview_matrix_stack_size;
+@@ -1685,8 +2296,19 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+ 
+     // if (rand()%2) return;
+ 
++#ifdef __VISIONOS__
++    // Temporary. Everything upstream of rasterisation has now been measured and
++    // is correct, so the question left is whether triangles are reaching the
++    // rasteriser at all. These three counters answer it: a triangle either never
++    // arrives, is thrown out for lying wholly outside the view, is thrown out by
++    // backface culling, or is drawn.
++    ++mTriangleTotal;
++#endif
+     if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
+         // The whole triangle lies outside the visible area
++#ifdef __VISIONOS__
++        ++mTriangleClipRejected;
++#endif
+         return;
+     }
+ 
+@@ -1715,18 +2337,28 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+ 
+         auto cull_type = mRsp->geometry_mode & cull_both;
+ 
++#ifdef __VISIONOS__
++#define SPAGHETTIPAD_CULLED_RETURN                                                                 \
++    do {                                                                                           \
++        ++mTriangleCullRejected;                                                                   \
++        return;                                                                                    \
++    } while (0)
++#else
++#define SPAGHETTIPAD_CULLED_RETURN return
++#endif
+         if (cull_type == cull_front) {
+             if (cross <= 0) {
+-                return;
++                SPAGHETTIPAD_CULLED_RETURN;
+             }
+         } else if (cull_type == cull_back) {
+             if (cross >= 0) {
+-                return;
++                SPAGHETTIPAD_CULLED_RETURN;
+             }
+         } else if (cull_type == cull_both) {
+             // Why is this even an option?
+-            return;
++            SPAGHETTIPAD_CULLED_RETURN;
+         }
++#undef SPAGHETTIPAD_CULLED_RETURN
+     }
+ 
+     // depth_test is set when the fragment has a depth value to compare (either from vertex Z via
+@@ -2178,6 +2810,16 @@ void Interpreter::GfxSpExtraGeometryMode(uint32_t clear, uint32_t set) {
+ }
+ 
+ void Interpreter::AdjustVIewportOrScissor(XYWidthHeight* area) {
++#ifdef __VISIONOS__
++    // Temporary. Mode B is known to render into the right textures and to project
++    // its geometry on screen, and the wearer still sees black. The remaining way
++    // both of those can be true at once is for the viewport or scissor to put
++    // that geometry outside the texture it was projected into, and the offset
++    // below is built from window dimensions that visionOS has no window to
++    // supply. This prints the inputs, so the arithmetic can be checked rather
++    // than assumed.
++    const XYWidthHeight before = *area;
++#endif
+     if (!mFbActive) {
+         // Adjust the y origin based on the y-inversion for the active framebuffer
+         GfxClipParameters clipParameters = mRapi->GetClipParameters();
+@@ -2207,6 +2849,28 @@ void Interpreter::AdjustVIewportOrScissor(XYWidthHeight* area) {
+             area->y *= RATIO_Y(mActiveFrameBuffer, mCurDimensions);
+         }
+     }
++
++#ifdef __VISIONOS__
++    if (mViewportDiagnostics < 8) {
++        ++mViewportDiagnostics;
++        const bool offsetApplied =
++            !mFbActive && (!mRendersToFb || (mMsaaLevel > 1 &&
++                                             mCurDimensions.width == mGameWindowViewport.width &&
++                                             mCurDimensions.height == mGameWindowViewport.height));
++        SPDLOG_WARN("[viewport] stereo {} fbActive {} rendersToFb {} msaa {} | in "
++                    "({},{} {}x{}) -> out ({},{} {}x{})",
++                    mStereoActive ? 1 : 0, mFbActive ? 1 : 0, mRendersToFb ? 1 : 0, mMsaaLevel,
++                    before.x, before.y, before.width, before.height, area->x, area->y,
++                    area->width, area->height);
++        SPDLOG_WARN("[viewport] cur {}x{} native {}x{} window {}x{} gameWindowViewport "
++                    "({},{} {}x{}) offsetApplied {}",
++                    mCurDimensions.width, mCurDimensions.height, mNativeDimensions.width,
++                    mNativeDimensions.height, mGfxCurrentWindowDimensions.width,
++                    mGfxCurrentWindowDimensions.height, mGameWindowViewport.x,
++                    mGameWindowViewport.y, mGameWindowViewport.width, mGameWindowViewport.height,
++                    offsetApplied ? 1 : 0);
++    }
++#endif
+ }
+ 
+ void Interpreter::CalcAndSetViewport(const F3DVp_t* viewport) {
+@@ -2712,8 +3376,46 @@ void Interpreter::GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_
+     lrxf = lrxf / (4.0f * HALF_SCREEN_WIDTH(mActiveFrameBuffer)) - 1.0f;
+     lryf = -(lryf / (4.0f * HALF_SCREEN_HEIGHT(mActiveFrameBuffer))) + 1.0f;
+ 
++#ifdef __VISIONOS__
++    // Decided while the framebuffer's edges are still exactly -1 and 1.
++    const bool rectOnPanel = StereoRectOnPanel(ulxf, lrxf, cycle_type);
++    if (rectOnPanel) {
++        // A rectangle is already in clip space with w = 1, so the placement that
++        // StereoProjection folds into an orthographic matrix as multiples of w
++        // is here applied directly: the panel's scale and centre, which carry
++        // the convergence within them. No aspect adjustment — the panel's shape
++        // comes from the eye's tangents, and both halves of the HUD must land
++        // on the same panel or the seams between them show.
++        //
++        // Which panel: a rectangle spanning the full framebuffer width is a
++        // background by construction — the menu backdrop arrives as exactly
++        // such strips — and goes to the backdrop panel regardless of where in
++        // the frame it is drawn. Anything narrower takes the same
++        // before-first-perspective test the orthographic matrices take, so a
++        // rectangle drawn as scenery lands where the scenery is. Tested in the
++        // coordinates this is handed — before the panel transform — where the
++        // framebuffer still spans exactly [-1, 1]; the tolerance is about two
++        // columns of a 320-wide frame, so filling to SCREEN_WIDTH - 1 still
++        // counts as full width.
++        constexpr float kFullWidthTolerance = 1.0f / 64.0f;
++        const bool fullWidth =
++            ulxf <= -1.0f + kFullWidthTolerance && lrxf >= 1.0f - kFullWidthTolerance;
++        const bool backdrop =
++            fullWidth || (!mStereoEyeSawPerspective && mStereoLastEyeHadPerspective);
++        const float* centre = backdrop ? mStereoBgCentre : mStereoHudCentre;
++        const float* scale = backdrop ? mStereoBgScale : mStereoHudScale;
++        ulxf = centre[0] + scale[0] * ulxf;
++        lrxf = centre[0] + scale[0] * lrxf;
++        ulyf = centre[1] + scale[1] * ulyf;
++        lryf = centre[1] + scale[1] * lryf;
++    } else {
++        ulxf = AdjXForAspectRatio(ulxf);
++        lrxf = AdjXForAspectRatio(lrxf);
++    }
++#else
+     ulxf = AdjXForAspectRatio(ulxf);
+     lrxf = AdjXForAspectRatio(lrxf);
++#endif
+ 
+     struct LoadedVertex* ul = &mRsp->loaded_vertices[MAX_VERTICES + 0];
+     struct LoadedVertex* ll = &mRsp->loaded_vertices[MAX_VERTICES + 1];
+@@ -4049,6 +4751,21 @@ bool gfx_read_fb_handler_custom(F3DGfx** cmd0) {
+     width = C1(0, 16);
+     height = C1(16, 16);
+ 
++#ifdef __VISIONOS__
++    // Mode B interprets the same display list once per eye, and this readback
++    // is synchronous and whole-frame. Run per eye it costs twice, and — worse —
++    // whichever eye ran last owned the CPU buffer: the game draws these
++    // captured pixels back on screen (the main menu's backdrop among them),
++    // and a buffer written by one eye and composited by the other put the
++    // left eye's picture in the right eye's view. A wearer reported exactly
++    // that as the backdrop's orientation being wrong in one eye. Only the
++    // frame's last eye reads back, so both eyes composite the same picture
++    // from the same pass — mono, like any photograph, and consistent.
++    if (gfx->StereoSkipsCpuReadback()) {
++        return false;
++    }
++#endif
++
+     gfx->Flush();
+     gfx->mRapi->ReadFramebufferToCPU(fbId, width, height, rgba16Buffer);
+ 
+@@ -4877,6 +5594,22 @@ bool Interpreter::ViewportMatchesRendererResolution() {
+ void Interpreter::StartFrame() {
+     mWapi->GetDimensions(&mGfxCurrentWindowDimensions.width, &mGfxCurrentWindowDimensions.height, &mCurWindowPosX,
+                          &mCurWindowPosY);
++
++#ifdef __VISIONOS__
++    // Upstream fixes the render resolution at Init and only ever changes it by
++    // the internal-resolution setting, because a desktop window's size is known
++    // before the first frame. This surface's is not: Mode B renders one eye's
++    // viewport, and how big that is comes from the compositor's first drawable —
++    // which arrives after the engine has started, and changes if the mode does.
++    //
++    // Without this the game would render 1920x1080 into a 1920x1824 eye and be
++    // stretched to fit. That is geometrically correct, because the frustum's
++    // shape lives in its tangents rather than in its pixel count, but it throws
++    // away two fifths of the vertical resolution the headset asked for.
++    mCurDimensions.width = mGfxCurrentWindowDimensions.width;
++    mCurDimensions.height = mGfxCurrentWindowDimensions.height;
++#endif
++
+     if (mCurDimensions.height == 0) {
+         // Avoid division by zero
+         mCurDimensions.height = 1;
+@@ -5032,9 +5765,15 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
+     }
+ }
+ 
+-void Interpreter::EndFrame() {
++// `pace` is false only for the first eye of a Mode B frame. Everything else here
++// is per-submission and has to run for both eyes; SwapBuffersBegin is the one
++// step that is per-*frame*, because it is where the backend sleeps out the
++// remainder of the frame interval.
++void Interpreter::EndFrame(bool pace) {
+     mRapi->EndFrame();
+-    mWapi->SwapBuffersBegin();
++    if (pace) {
++        mWapi->SwapBuffersBegin();
++    }
+     mRapi->FinishRender();
+     mWapi->SwapBuffersEnd();
+ }
+diff --git a/src/libultraship/bridge/windowbridge.cpp b/src/libultraship/bridge/windowbridge.cpp
+index bfa5e7ea..6cd8ce61 100644
+--- a/src/libultraship/bridge/windowbridge.cpp
++++ b/src/libultraship/bridge/windowbridge.cpp
+@@ -2,6 +2,9 @@
+ #include "ship/window/Window.h"
+ #include "ship/Context.h"
+ 
++#include <chrono>
++#include <thread>
++
+ extern "C" {
+ 
+ uint32_t WindowGetWidth() {
+@@ -20,6 +23,17 @@ bool WindowIsRunning() {
+     return Ship::Context::GetInstance()->GetWindow()->IsRunning();
+ }
+ 
++bool WindowIsFrameReady() {
++    auto window = Ship::Context::GetInstance()->GetWindow();
++    window->HandleEvents();
++
++    const bool ready = window->IsRunning() && window->IsFrameReady();
++    if (!ready) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(16));
++    }
++    return ready;
++}
++
+ int32_t WindowGetPosX() {
+     return Ship::Context::GetInstance()->GetWindow()->GetPosX();
+ }
+diff --git a/src/libultraship/controller/controldeck/ControlDeck.cpp b/src/libultraship/controller/controldeck/ControlDeck.cpp
+index c7c96f63..8e330903 100644
+--- a/src/libultraship/controller/controldeck/ControlDeck.cpp
++++ b/src/libultraship/controller/controldeck/ControlDeck.cpp
+@@ -7,6 +7,26 @@
+ #include <imgui.h>
+ #include "ship/controller/controldevice/controller/mapping/mouse/WheelHandler.h"
+ 
++#ifdef __VISIONOS__
++// Defined by the visionOS shell (see visionos/SpaghettiPadBridge.h). Declared
++// weak with a no-op default so libultraship still links on its own.
++extern "C" __attribute__((weak)) void SpaghettiPad_InputFirstActivity(int, unsigned, int, int) {
++}
++
++namespace {
++// One bit per port, set once that port has carried real input. File scope rather
++// than a member because it exists only to make a log line fire once, and adding
++// it to ControlDeck.h would put a visionOS-only field in a header every platform
++// compiles. There is exactly one ControlDeck in a process.
++uint8_t gReportedPortActivity = 0;
++
++// A stick past this is deliberate; below it may be a resting analog stick that
++// has drifted. Buttons need no such allowance — a pressed button is pressed, and
++// treating drift as input would report that the game was driven when it was not.
++constexpr int kDeliberateStick = 20;
++} // namespace
++#endif
++
+ namespace LUS {
+ ControlDeck::ControlDeck(std::vector<CONTROLLERBUTTONS_T> additionalBitmasks,
+                          std::shared_ptr<Ship::ControllerDefaultMappings> controllerDefaultMappings,
+@@ -70,5 +90,30 @@ void ControlDeck::WriteToOSContPad(OSContPad* pad) {
+             controller->ReadToPad(&pad[i]);
+         }
+     }
++
++#ifdef __VISIONOS__
++    // "A controller is connected" and "the game read it" are separate claims, and
++    // only the second is what Phase 5 is for. This is where the difference is
++    // visible: whatever ReadToPad just wrote is exactly what the game will act
++    // on. A headset cannot be watched over the shoulder or screenshotted, so the
++    // first time each port carries something other than a neutral pad is logged —
++    // once per port, since this runs at the game's own rate.
++    for (size_t i = 0; i < mPorts.size() && i < 8; i++) {
++        const uint8_t bit = static_cast<uint8_t>(1u << i);
++        if ((gReportedPortActivity & bit) != 0) {
++            continue;
++        }
++
++        const OSContPad& read = pad[i];
++        if (read.button == 0 && read.stick_x > -kDeliberateStick && read.stick_x < kDeliberateStick &&
++            read.stick_y > -kDeliberateStick && read.stick_y < kDeliberateStick) {
++            continue;
++        }
++
++        gReportedPortActivity |= bit;
++        SpaghettiPad_InputFirstActivity(static_cast<int>(i), static_cast<unsigned>(read.button), read.stick_x,
++                                        read.stick_y);
++    }
++#endif
+ }
+ } // namespace LUS
+diff --git a/src/ship/CMakeLists.txt b/src/ship/CMakeLists.txt
+index e37a3a1d..ea6ae32e 100644
+--- a/src/ship/CMakeLists.txt
++++ b/src/ship/CMakeLists.txt
+@@ -59,7 +59,7 @@ target_sources(libultraship PRIVATE ${Source_Files__Window__Gui})
+ 
+ file(GLOB_RECURSE Source_Files__Utils RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "utils/*.cpp" "utils/*.c")
+ 
+-if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
++if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR LUS_APPLE_EMBEDDED)
+     list(APPEND Source_Files__Utils ${CMAKE_CURRENT_SOURCE_DIR}/utils/AppleFolderManager.mm)
+ endif()
+ 
+diff --git a/src/ship/Context.cpp b/src/ship/Context.cpp
+index 26d2ec2c..c87c2166 100644
+--- a/src/ship/Context.cpp
++++ b/src/ship/Context.cpp
+@@ -479,11 +479,6 @@ std::string Context::GetAppBundlePath() {
+     }
+ #endif
+ 
+-#ifdef __IOS__
+-    const char* home = getenv("HOME");
+-    return std::string(home) + "/Documents";
+-#endif
+-
+ #ifdef NON_PORTABLE
+     return CMAKE_INSTALL_PREFIX;
+ #else
+diff --git a/src/ship/audio/Audio.cpp b/src/ship/audio/Audio.cpp
+index f09a6898..03e08eff 100644
+--- a/src/ship/audio/Audio.cpp
++++ b/src/ship/audio/Audio.cpp
+@@ -1,12 +1,16 @@
+ #include "ship/audio/Audio.h"
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(__IOS__)
+ #include "ship/audio/CoreAudioAudioPlayer.h"
+ #endif
+ 
+ #include "ship/Context.h"
+ #include "ship/controller/controldeck/ControlDeck.h"
+ 
++#ifdef __IOS__
++#include <os/log.h>
++#endif
++
+ namespace Ship {
+ 
+ Audio::~Audio() {
+@@ -20,7 +24,7 @@ void Audio::InitAudioPlayer() {
+             mAudioPlayer = std::make_shared<WasapiAudioPlayer>(this->mAudioSettings);
+             break;
+ #endif
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(__IOS__)
+         case AudioBackend::COREAUDIO:
+             mAudioPlayer = std::make_shared<CoreAudioAudioPlayer>(this->mAudioSettings);
+             break;
+@@ -38,6 +42,20 @@ void Audio::InitAudioPlayer() {
+         // Fallback to Null if the native system player does not work.
+         SetCurrentAudioBackend(AudioBackend::NUL);
+     }
++
++#ifdef __IOS__
++    // The one line that says whether this session was ever going to make a
++    // sound, and through what. A backend enum is opaque in a log, so it is
++    // spelled out; NUL chosen by *fallback* rather than by config is the case
++    // this exists to catch.
++    const AudioBackend backend = GetCurrentAudioBackend();
++    os_log(os_log_create("com.subtlepath.spaghettipad", "audio"),
++           "audio player is %{public}s (backend %d)",
++           backend == AudioBackend::SDL   ? "SDL"
++           : backend == AudioBackend::NUL ? "Null: this session is silent"
++                                          : "another backend",
++           (int)backend);
++#endif
+ }
+ 
+ void Audio::Init() {
+@@ -45,7 +63,7 @@ void Audio::Init() {
+ #ifdef _WIN32
+     mAvailableAudioBackends->push_back(AudioBackend::WASAPI);
+ #endif
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(__IOS__)
+     mAvailableAudioBackends->push_back(AudioBackend::COREAUDIO);
+ #endif
+     mAvailableAudioBackends->push_back(AudioBackend::SDL);
+@@ -88,4 +106,10 @@ AudioChannelsSetting Audio::GetAudioChannels() const {
+     return mAudioSettings.ChannelSetting;
+ }
+ 
++void Audio::SetPaused(bool paused) {
++    if (mAudioPlayer) {
++        mAudioPlayer->SetPaused(paused);
++    }
++}
++
+ } // namespace Ship
+diff --git a/src/ship/audio/SDLAudioPlayer.cpp b/src/ship/audio/SDLAudioPlayer.cpp
+index d9f1e44d..d7af5c35 100644
+--- a/src/ship/audio/SDLAudioPlayer.cpp
++++ b/src/ship/audio/SDLAudioPlayer.cpp
+@@ -1,6 +1,18 @@
+ #include "ship/audio/SDLAudioPlayer.h"
+ #include <spdlog/spdlog.h>
+ 
++#ifdef __IOS__
++#include <os/log.h>
++
++// SPDLOG never reaches a headset's log, and audio is invisible in a screenshot
++// even where screenshots exist. These are the only witnesses a device session
++// has to whether sound was ever going to work.
++static os_log_t AudioOsLog() {
++    static os_log_t log = os_log_create("com.subtlepath.spaghettipad", "audio");
++    return log;
++}
++#endif
++
+ namespace Ship {
+ 
+ SDLAudioPlayer::~SDLAudioPlayer() {
+@@ -21,8 +33,15 @@ void SDLAudioPlayer::DoClose() {
+ }
+ 
+ bool SDLAudioPlayer::DoInit() {
++#ifdef __IOS__
++    SDL_SetHint(SDL_HINT_AUDIO_CATEGORY, "playback");
++#endif
+     if (SDL_Init(SDL_INIT_AUDIO) != 0) {
+         SPDLOG_ERROR("SDL init error: {}", SDL_GetError());
++#ifdef __IOS__
++        os_log_error(AudioOsLog(), "SDL audio subsystem failed to initialize: %{public}s",
++                     SDL_GetError());
++#endif
+         return false;
+     }
+ 
+@@ -40,10 +59,18 @@ bool SDLAudioPlayer::DoInit() {
+     mDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+     if (mDevice == 0) {
+         SPDLOG_ERROR("SDL_OpenAudio error: {}", SDL_GetError());
++#ifdef __IOS__
++        os_log_error(AudioOsLog(), "no audio device would open: %{public}s",
++                     SDL_GetError());
++#endif
+         return false;
+     }
+ 
+     SPDLOG_INFO("SDL Audio initialized: {} channels, {} Hz", mNumChannels, this->GetSampleRate());
++#ifdef __IOS__
++    os_log(AudioOsLog(), "audio device open and unpaused: %d channel(s) at %d Hz",
++           (int)mNumChannels, (int)this->GetSampleRate());
++#endif
+ 
+     SDL_PauseAudioDevice(mDevice, 0);
+     return true;
+@@ -53,8 +80,19 @@ int SDLAudioPlayer::Buffered() {
+     return SDL_GetQueuedAudioSize(mDevice) / (sizeof(int16_t) * mNumChannels);
+ }
+ 
++void SDLAudioPlayer::SetPaused(bool paused) {
++    mPaused = paused;
++    if (mDevice == 0) {
++        return;
++    }
++    SDL_PauseAudioDevice(mDevice, paused ? 1 : 0);
++    if (paused) {
++        SDL_ClearQueuedAudio(mDevice);
++    }
++}
++
+ void SDLAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
+-    if (Buffered() < 6000) {
++    if (!mPaused && Buffered() < 6000) {
+         // Don't fill the audio buffer too much in case this happens
+         SDL_QueueAudio(mDevice, buf, len);
+     }
+diff --git a/src/ship/config/Config.cpp b/src/ship/config/Config.cpp
+index 5a818efd..297086de 100644
+--- a/src/ship/config/Config.cpp
++++ b/src/ship/config/Config.cpp
+@@ -266,7 +266,7 @@ AudioBackend Config::GetCurrentAudioBackend() {
+     return AudioBackend::WASAPI;
+ #endif
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(__IOS__)
+     return AudioBackend::COREAUDIO;
+ #endif
+ 
+diff --git a/src/ship/window/gui/Gui.cpp b/src/ship/window/gui/Gui.cpp
+index 426a965e..e97e19de 100644
+--- a/src/ship/window/gui/Gui.cpp
++++ b/src/ship/window/gui/Gui.cpp
+@@ -7,6 +7,39 @@
+ #include <string>
+ #include <vector>
+ 
++#ifdef __VISIONOS__
++#include <chrono>
++
++#include "fast/backends/gfx_visionos.h"
++
++// Defined by the visionOS shell (see visionos/SpaghettiPadBridge.h). Declared
++// weak with a no-op default so libultraship still links on its own.
++extern "C" __attribute__((weak)) void SpaghettiPad_SetMenuVisible(int) {
++}
++
++namespace {
++// What ImGui's SDL2 platform backend would have supplied, and all of it that
++// applies here: how big the surface is and how long the last frame took. There
++// is no pointer, no keyboard, no clipboard and no IME in an immersive space, so
++// there is nothing else to feed in. Controller navigation arrives in Phase 5.
++void VisionOSNewFrame(ImGuiIO* io) {
++    uint32_t width = 0;
++    uint32_t height = 0;
++    SpaghettiPad_RenderSurfaceSize(&width, &height);
++    io->DisplaySize = ImVec2((float)width, (float)height);
++
++    using clock = std::chrono::steady_clock;
++    static clock::time_point last = clock::now();
++    const clock::time_point now = clock::now();
++    const float delta = std::chrono::duration<float>(now - last).count();
++    last = now;
++    // ImGui asserts on a non-positive delta, which a first frame or a clock that
++    // did not advance would otherwise produce.
++    io->DeltaTime = delta > 0.0f ? delta : 1.0f / 60.0f;
++}
++} // namespace
++#endif
++
+ #include "ship/config/Config.h"
+ #include "ship/Context.h"
+ #include "ship/config/ConsoleVariable.h"
+@@ -164,11 +197,22 @@ void Gui::ImGuiWMInit() {
+             break;
+ #if __APPLE__
+         case WindowBackend::FAST3D_SDL_METAL:
++#ifdef __VISIONOS__
++            // ImGui's SDL2 platform backend is a wrapper around an SDL_Window,
++            // and visionOS has none. Everything it would provide either does not
++            // exist here (mouse, cursors, clipboard, IME) or is supplied
++            // directly in ImGuiWMNewFrame below, so the platform half of ImGui
++            // is this app's rather than SDL's.
++            mImGuiIo->BackendPlatformName = "SpaghettiPad visionOS";
++            mImGuiIo->DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
++            VisionOSNewFrame(mImGuiIo);
++#else
+             SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+             if (Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger(CVAR_ALLOW_BACKGROUND_INPUTS, 1)) {
+                 SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+             }
+             ImGui_ImplSDL2_InitForMetal(static_cast<SDL_Window*>(mImpl.Metal.Window));
++#endif
+             break;
+ #endif
+ #if defined(ENABLE_DX11) || defined(ENABLE_DX12)
+@@ -191,7 +235,9 @@ void Gui::ShutDownImGui(Ship::Window* window) {
+ #endif
+ #if __APPLE__
+         case WindowBackend::FAST3D_SDL_METAL:
++#ifndef __VISIONOS__
+             ImGui_ImplSDL2_Shutdown();
++#endif
+             ImGui_ImplMetal_Shutdown();
+             break;
+ #endif
+@@ -291,9 +337,15 @@ void Gui::HandleWindowEvents(WindowEvent event) {
+     switch (Context::GetInstance()->GetWindow()->GetWindowBackend()) {
+         case WindowBackend::FAST3D_SDL_OPENGL:
+         case WindowBackend::FAST3D_SDL_METAL:
++#ifdef __VISIONOS__
++            // Nothing reaches ImGui from an SDL window that does not exist. The
++            // visionOS window backend never calls this.
++            (void)event;
++#else
+             ImGui_ImplSDL2_ProcessEvent(static_cast<const SDL_Event*>(event.Sdl.Event));
+ #if defined(__ANDROID__) || defined(__IOS__)
+             Mobile::ImGuiProcessEvent(mImGuiIo->WantTextInput);
++#endif
+ #endif
+             break;
+ #ifdef ENABLE_DX11
+@@ -367,7 +419,11 @@ void Gui::ImGuiWMNewFrame() {
+     switch (Context::GetInstance()->GetWindow()->GetWindowBackend()) {
+         case WindowBackend::FAST3D_SDL_OPENGL:
+         case WindowBackend::FAST3D_SDL_METAL:
++#ifdef __VISIONOS__
++            VisionOSNewFrame(mImGuiIo);
++#else
+             ImGui_ImplSDL2_NewFrame();
++#endif
+             break;
+ #ifdef ENABLE_DX11
+         case WindowBackend::FAST3D_DXGI_DX11:
+@@ -570,6 +626,10 @@ void Gui::DrawMenu() {
+         GetMenu()->Draw();
+     }
+ 
++#ifdef __VISIONOS__
++    SpaghettiPad_SetMenuVisible(GetMenuOrMenubarVisible());
++#endif
++
+     for (auto& windowIter : mGuiWindows) {
+         windowIter.second->Update();
+         windowIter.second->Draw();
+@@ -716,6 +776,26 @@ void Gui::DrawGame() {
+         }
+     }
+     uintptr_t fb = Ship::Context::GetInstance()->GetWindow()->GetGfxFrameBuffer();
++#ifdef __VISIONOS__
++    // Temporary. On Apple the game always renders into mGameFb and framebuffer 0
++    // is cleared, so this ImGui::Image is the only thing that ever puts the game
++    // on the surface the compositor presents. In Mode B the wearer sees black
++    // with thousands of triangles correctly drawn, which makes this the last
++    // untested link: either fb never arrives, or it is drawn somewhere nobody
++    // looks.
++    {
++        static int logs = 0;
++        if (logs < 8) {
++            ++logs;
++            SPDLOG_WARN("[composite] fb {:#x} pos ({:.1f},{:.1f}) size {:.1f}x{:.1f} "
++                        "windowSize {:.1f}x{:.1f} cur {}x{}",
++                        (unsigned long long)fb, pos.x, pos.y, size.x, size.y,
++                        ImGui::GetWindowSize().x, ImGui::GetWindowSize().y,
++                        mInterpreter.lock()->mCurDimensions.width,
++                        mInterpreter.lock()->mCurDimensions.height);
++        }
++    }
++#endif
+     if (fb) {
+         ImGui::SetCursorPos(pos);
+         ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
