@@ -3,8 +3,8 @@
 <p align="center">
   <strong>Mario Kart 64 on Apple Vision Pro—drawn around you in a fully immersive space.</strong><br>
   Native Compositor Services rendering, per-eye stereo through the engine's own
-  display lists, ARKit world-locking, PS VR2 Sense controllers, on-device ROM
-  conversion, and optional enhanced texture packs.
+  display lists, ARKit world-locking, <strong>Requires PS5 or PS VR2 Sense controllers</strong>,
+  on-device ROM conversion, and optional enhanced texture packs.
 </p>
 
 <p align="center">
