@@ -1,0 +1,119 @@
+name: SpaghettiPad visionOS build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: visionos-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  repository-safety:
+    name: Repository safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check assets, history, scripts, patches, and docs
+        run: scripts/check-repo-safety.sh
+
+  visionos-build:
+    name: ROM-free unsigned visionOS app
+    runs-on: macos-26
+    timeout-minutes: 150
+    needs: repository-safety
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The audit pins MinimumOSVersion to visionOS 26.0, so an image whose
+      # newest Xcode predates that SDK cannot produce a passing build. Failing
+      # here names that directly instead of leaving it to a CMake configure
+      # error several minutes later.
+      - name: Select an Xcode with the visionOS SDK
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in $(ls -d /Applications/Xcode*.app | sort -Vr); do
+            if "$candidate/Contents/Developer/usr/bin/xcodebuild" -showsdks \
+                2>/dev/null | grep -q 'xros'; then
+              selected="$candidate"
+              break
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "No installed Xcode on this runner ships a visionOS SDK." >&2
+            ls -d /Applications/Xcode*.app >&2
+            exit 1
+          fi
+          sudo xcode-select -s "$selected/Contents/Developer"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i visionos
+
+      - name: Install build dependencies
+        run: >-
+          brew install cmake ninja pkgconf sdl2 glew nlohmann-json libpng
+          libzip tinyxml2 libogg libvorbis opus opusfile sdl2_net ripgrep
+
+      - name: Cache fetched build dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            build-oracle/_deps
+            build-visionos/_deps
+          key: spaghettipad-visionos-${{ runner.os }}-${{ hashFiles('patches/libultraship-visionos.patch', 'patches/spaghettikart-visionos.patch', 'scripts/*.sh') }}
+
+      # Clones the pinned inputs, builds the macOS oracle that produces the
+      # clean port archive, applies the visionOS lane, builds the app, and runs
+      # the audit with REQUIRE_UNSIGNED=1 because no signing identity exists
+      # here. A CI runner is the one place the "replays from pinned revisions"
+      # claim is tested against a genuinely empty directory.
+      - name: Reproduce the unsigned arm64 visionOS app
+        env:
+          VISIONOS_BUILD_JOBS: '4'
+          ORACLE_BUILD_JOBS: '4'
+        run: scripts/build-visionos.sh --device
+
+      - name: Package and exercise the signing rejection gate
+        run: |
+          scripts/package-visionos.sh
+          if REQUIRE_SIGNED=1 scripts/package-visionos.sh; then
+            echo "Unsigned CI app unexpectedly passed REQUIRE_SIGNED=1" >&2
+            exit 1
+          fi
+
+      - name: Publish artifact hash and provenance
+        run: |
+          set -euo pipefail
+          shasum -a 256 artifacts/*.ipa | tee artifact-sha256.txt
+          unzip -p artifacts/*.ipa BUILD_PROVENANCE.txt > build-provenance.txt
+          {
+            echo '### Unsigned ROM-free visionOS artifact'
+            echo '```text'
+            cat artifact-sha256.txt
+            echo '```'
+            echo '### Build provenance'
+            echo '```text'
+            cat build-provenance.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned proof artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: SpaghettiPad-visionOS-unsigned
+          path: |
+            artifacts/*.ipa
+            artifact-sha256.txt
+            build-provenance.txt
+          if-no-files-found: error

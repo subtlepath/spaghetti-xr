@@ -8,6 +8,7 @@
 
 #import "SpaghettiPadWorldTracking.h"
 
+#import "SpaghettiPadAccessorySteering.h"
 #import "SpaghettiPadBridge.h"
 
 #import <Foundation/Foundation.h>
@@ -102,21 +103,48 @@ bool WorldTracking::Start() {
         return false;
     }
 
+    // Phase 5's accessory tracking joins the session here, before it is run,
+    // rather than re-running a live session later to add itself.
+    //
+    // ARKit permits one session, so the two ways to have both providers are to
+    // compose the set once or to call ar_session_run again once the wearer turns
+    // steering on. The second is the one that can cost a headset its picture: a
+    // re-run under a live compositor puts world tracking — the thing every
+    // drawable's device anchor comes from — through a state transition to buy a
+    // feature that is off by default. So the set is composed once, and steering
+    // is switched on and off further in, at the update handler.
+    //
+    // CreateProvider() returns nil for every reason it might not work, having
+    // logged which, and a nil provider simply is not added. Nothing about
+    // steering is allowed to change what world tracking does.
+    ar_data_provider_t accessoryProvider = SharedAccessorySteering().CreateProvider();
+
     // A provider can fail long after it is run — most often unauthorized — and
     // the only symptom at the frame loop would be queries that quietly stop
-    // succeeding. This is the one place ARKit says why.
+    // succeeding. This is the one place ARKit says why. With two providers in
+    // the session the line has to name which one, or a wearer's archive cannot
+    // tell a headset that has stopped tracking the room from one that has merely
+    // stopped tracking a controller.
+    ar_world_tracking_provider_t worldProvider = provider_;
     ar_session_set_data_provider_state_change_handler(
         session_, dispatch_get_main_queue(),
         ^(ar_data_providers_t, ar_data_provider_state_t state, ar_error_t error,
-          ar_data_provider_t) {
+          ar_data_provider_t changed) {
+            const char* which = "a data provider";
+            if (changed == (ar_data_provider_t)worldProvider) {
+                which = "world tracking";
+            } else if (accessoryProvider != nil && changed == accessoryProvider) {
+                which = "accessory tracking";
+            }
+
             if (error == nil) {
-                os_log(TrackingLog(), "world tracking is %{public}s",
+                os_log(TrackingLog(), "%{public}s is %{public}s", which,
                        ProviderStateName(state));
                 return;
             }
             CFErrorRef cfError = ar_error_copy_cf_error(error);
             os_log_error(TrackingLog(),
-                         "world tracking is %{public}s: %{public}@",
+                         "%{public}s is %{public}s: %{public}@", which,
                          ProviderStateName(state), (__bridge NSError*)cfError);
             if (cfError != nullptr) {
                 CFRelease(cfError);
@@ -125,8 +153,17 @@ bool WorldTracking::Start() {
 
     ar_data_providers_t providers = ar_data_providers_create();
     ar_data_providers_add_data_provider(providers, provider_);
+    if (accessoryProvider != nil) {
+        ar_data_providers_add_data_provider(providers, accessoryProvider);
+    }
     ar_session_run(session_, providers);
     running_.store(true, std::memory_order_release);
+
+    // The controllers themselves can only be found once the session is running,
+    // and they connect and disconnect for the rest of the process's life.
+    if (accessoryProvider != nil) {
+        SharedAccessorySteering().StartWatchingAccessories();
+    }
 
     // The authorization requirement is read from ARKit rather than guessed at,
     // because guessing it wrong is what puts an unnecessary usage-description

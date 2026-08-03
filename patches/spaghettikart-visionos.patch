@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 883763dfe..830987c2c 100644
+index 883763dfe..149d754c2 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -29,7 +29,64 @@ if(ENABLE_VCPKG)
@@ -68,7 +68,7 @@ index 883763dfe..830987c2c 100644
    set(SPAGHETTIKART_IOS ON)
    set(PLATFORM "OS64")
    include(cmake/ios.toolchain.cmake)
-@@ -126,6 +183,27 @@ if(SPAGHETTIKART_IOS)
+@@ -126,6 +183,30 @@ if(SPAGHETTIKART_IOS)
  
  endif()
  
@@ -79,6 +79,9 @@ index 883763dfe..830987c2c 100644
 +          SpaghettiPadCompositor.mm
 +          SpaghettiPadRenderSurface.mm
 +          SpaghettiPadWorldTracking.mm
++          SpaghettiPadAccessorySteering.mm
++          SpaghettiPadSettingsModel.swift
++          SpaghettiPadSettingsView.swift
 +          SpaghettiPad-Bridging-Header.h
 +          Info.plist.in)
 +    if(NOT EXISTS "${SPAGHETTIPAD_SHELL_DIR}/${SHELL_FILE}")
@@ -96,7 +99,7 @@ index 883763dfe..830987c2c 100644
  add_executable(${PROJECT_NAME} ${ALL_FILES})
  target_include_directories(
    ${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-@@ -145,6 +223,91 @@ if(SPAGHETTIKART_IOS)
+@@ -145,6 +226,102 @@ if(SPAGHETTIKART_IOS)
                 RESOURCE "${IMAGE_FILES};${STORYBOARD_FILE};${ICON_FILES}")
  endif()
  
@@ -123,8 +126,16 @@ index 883763dfe..830987c2c 100644
 +  # compositor uses it directly, so it is named here rather than inherited by
 +  # luck. ARKit is not optional: a drawable presented without the device anchor
 +  # this app queries from it is dropped by the headset.
++  #
++  # GameController and QuartzCore arrive through SDL today, and the shell uses
++  # both directly — GameController to see the controllers SDL was offered and to
++  # find the spatial accessories ARKit tracks, QuartzCore for the clock the
++  # steering axis is aged against. Named for the same reason Metal is: a
++  # dependency held only by another target's link line is one refactor away from
++  # an undefined symbol.
 +  target_link_libraries(${PROJECT_NAME} PRIVATE
-+    "-framework CompositorServices" "-framework ARKit" "-framework Metal")
++    "-framework CompositorServices" "-framework ARKit" "-framework Metal"
++    "-framework GameController" "-framework QuartzCore")
 +
 +  target_sources(${PROJECT_NAME} PRIVATE
 +    "${SPAGHETTIPAD_SHELL_DIR}/SpaghettiPadApp.swift"
@@ -132,6 +143,9 @@ index 883763dfe..830987c2c 100644
 +    "${SPAGHETTIPAD_SHELL_DIR}/SpaghettiPadCompositor.mm"
 +    "${SPAGHETTIPAD_SHELL_DIR}/SpaghettiPadRenderSurface.mm"
 +    "${SPAGHETTIPAD_SHELL_DIR}/SpaghettiPadWorldTracking.mm"
++    "${SPAGHETTIPAD_SHELL_DIR}/SpaghettiPadAccessorySteering.mm"
++    "${SPAGHETTIPAD_SHELL_DIR}/SpaghettiPadSettingsModel.swift"
++    "${SPAGHETTIPAD_SHELL_DIR}/SpaghettiPadSettingsView.swift"
 +    "${SPAGHETTIPAD_SHELL_DIR}/Assets.xcassets"
 +    "${SPAGHETTIPAD_PORT_ARCHIVE}"
 +    "${CMAKE_CURRENT_SOURCE_DIR}/config.yml"
@@ -188,7 +202,7 @@ index 883763dfe..830987c2c 100644
  include(cmake/SetFlags.cmake)
  
  # ##############################################################################
-@@ -204,17 +367,20 @@ endif()
+@@ -204,17 +381,20 @@ endif()
  # ##############################################################################
  
  
@@ -219,6 +233,20 @@ index 883763dfe..830987c2c 100644
    include(ExternalProject)
    # Torch's pinned spdlog bundles an fmt that trips a consteval error under
    # newer AppleClang (Xcode 16+): "call to consteval function
+diff --git a/Spaghettify.entitlements b/Spaghettify.entitlements
+new file mode 100644
+index 000000000..99f471672
+--- /dev/null
++++ b/Spaghettify.entitlements
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.developer.kernel.increased-memory-limit</key>
++	<true/>
++</dict>
++</plist>
 diff --git a/cmake/SetCmakeVar.cmake b/cmake/SetCmakeVar.cmake
 index 934f308ef..be64173ec 100644
 --- a/cmake/SetCmakeVar.cmake
@@ -381,10 +409,91 @@ index 65d5741a3..92ad7fb18 100644
  target_include_directories(${PROJECT_NAME} PRIVATE ${SEMVER_DIR})
  
 diff --git a/src/port/Engine.cpp b/src/port/Engine.cpp
-index 5b3b1bcac..5e7714b8d 100644
+index 5b3b1bcac..d896ab0a4 100644
 --- a/src/port/Engine.cpp
 +++ b/src/port/Engine.cpp
-@@ -421,6 +421,38 @@ void GameEngine::RunCommands(Gfx* pool, const std::vector<std::unordered_map<Mtx
+@@ -42,6 +42,15 @@
+ #include <ship/port/switch/SwitchImpl.h>
+ #endif
+ 
++#ifdef __VISIONOS__
++// Defined by the visionOS shell (visionos/SpaghettiPadAccessorySteering.mm).
++// Declared here rather than by including SpaghettiPadBridge.h so the shell's
++// directory stays off this target's include path — the same reason
++// ControlDeck.cpp declares its half inline.
++extern "C" void SpaghettiPad_SetMotionSteeringEnabled(int enabled);
++extern "C" void SpaghettiPad_SetMotionSensitivity(float sensitivity);
++#endif
++
+ extern "C" {
+ bool prevAltAssets = false;
+ float gInterpolationStep = 0.0f;
+@@ -178,6 +187,32 @@ GameEngine::GameEngine() {
+ 
+     this->context->Init({assets_path}, {}, 3, { 26800, 512, 1100 }, wnd, controlDeck);
+ 
++#ifdef __VISIONOS__
++    // Forced, not defaulted, and re-forced on every launch.
++    //
++    // SpaghettiGui already ignores this variable when deciding whether a pad may
++    // open the menu, because on this platform nothing else can. But ControlDeck
++    // reads it directly to decide whether to stop feeding the game while the
++    // menu is up, and a wearer navigating a settings page must not also be
++    // steering. Writing it here keeps that one consumer in agreement with the
++    // rest rather than teaching every caller about visionOS. The switch that
++    // could contradict it is not built into this platform's menu.
++    CVarSetInteger(CVAR_IMGUI_CONTROLLER_NAV, 1);
++
++    // 6DoF steering, off until someone asks for it.
++    //
++    // Off by default because it is the more surprising of the two ways to steer
++    // — a wearer who has just got a race working with the left stick should not
++    // find their hands doing it instead — and because nothing about it has been
++    // felt on hardware yet. Registered and pushed to the shell here so the
++    // wearer's saved choice survives a relaunch; the menu pushes it again on
++    // every change.
++    CVarRegisterInteger("gSettings.SpaghettiPad.MotionSteering", 0);
++    CVarRegisterFloat("gSettings.SpaghettiPad.MotionSensitivity", 1.0f);
++    SpaghettiPad_SetMotionSensitivity(CVarGetFloat("gSettings.SpaghettiPad.MotionSensitivity", 1.0f));
++    SpaghettiPad_SetMotionSteeringEnabled(CVarGetInteger("gSettings.SpaghettiPad.MotionSteering", 0));
++#endif
++
+ #ifndef __SWITCH__
+     Ship::Context::GetInstance()->GetLogger()->set_level(
+         (spdlog::level::level_enum) CVarGetInteger("gDeveloperTools.LogLevel", 1));
+@@ -310,7 +345,10 @@ extern "C" uint32_t GameEngine_GetInterpolationFrameCount() {
+ }
+ 
+ void GameEngine::ShowMessage(const char* title, const char* message, SDL_MessageBoxFlags type) {
+-#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(__VISIONOS__)
++    // visionOS runs with SDL's video subsystem off, so SDL has no window to put
++    // a message box in and nothing would be drawn. The log is the only place a
++    // message can go, and the shell's launch window is what tells the person.
+     SPDLOG_ERROR(message);
+ #else
+     SDL_ShowSimpleMessageBox(type, title, message, nullptr);
+@@ -325,6 +363,19 @@ int GameEngine::ShowYesNoBox(const char* title, const char* box) {
+ #elif defined(__SWITCH__)
+     SPDLOG_ERROR(box);
+     return IDYES;
++#elif defined(__VISIONOS__)
++    // The one caller is the first-run "No O2R files found. Generate one now?"
++    // prompt, and on this platform the answer is already known: the shell
++    // refuses to start the engine at all unless the container holds either a
++    // game archive or a ROM, so reaching this line means a ROM was imported —
++    // which is the person asking for exactly this.
++    //
++    // Answering rather than asking is also the only safe option. `ret` above is
++    // uninitialised, and SDL_ShowMessageBox with no video subsystem fails
++    // without writing it, so the SDL branch would return whatever was on the
++    // stack and decide by coin toss whether to _Exit(1).
++    SPDLOG_INFO("{}: answering yes ({})", title, box);
++    return IDYES;
+ #else
+     SDL_MessageBoxData boxData = { 0 };
+     SDL_MessageBoxButtonData buttons[2] = { { 0 } };
+@@ -421,6 +472,47 @@ void GameEngine::RunCommands(Gfx* pool, const std::vector<std::unordered_map<Mtx
      }
  }
  
@@ -418,16 +527,92 @@ index 5b3b1bcac..5e7714b8d 100644
 +    }
 +    return CVarGetInteger("gEnhancements.Mods.AlternateAssets", 0);
 +}
++
++// Straight through to libultraship, which owns both halves of the answer: the
++// backend's live texture memory and the texture cache's own account of itself.
++// It sits here rather than in the shell because the two trees do not include
++// each other's headers, and this one already includes both sides.
++extern "C" void SpaghettiPad_EngineTextureMemory(uint64_t* gpuBytes, uint64_t* gpuTextures, uint64_t* cacheEntries,
++                                                 uint64_t* cacheBytes, uint64_t* evictions) {
++    gfx_texture_memory_stats(gpuBytes, gpuTextures, cacheEntries, cacheBytes, evictions);
++}
 +#endif
 +
  /**
   * During the draw phase, the gfx pool is filled with graphics commands.
   * At the end of the game loop, these commands are sent into lus and interpreted
+@@ -774,7 +866,38 @@ extern "C" void Timer_SetValue(int32_t* address, int32_t value) {
+     *address = value;
+ }
+ 
++#ifdef __VISIONOS__
++// Declared rather than included: this file has no business reaching into the
++// fast backend's header, and the shell contract is written out where it is used
++// everywhere else in this lane.
++extern "C" int SpaghettiPad_RenderStereoEnabled(void);
++#endif
++
+ extern "C" float OTRGetAspectRatio() {
++#ifdef __VISIONOS__
++    // Mode B answers with the game's own aspect, not the eye's.
++    //
++    // This function means "how wide is the surface the game is drawn on", and
++    // every caller uses it to decide how far past 4:3 to extend something. In
++    // Mode A that is a flat frame in a room and the eye's number is the right
++    // one. In Mode B it is not: the game's 2D is composed onto the HUD panel,
++    // which is 4:3 by construction — BeginStereoEye builds its half-height as
++    // three quarters of its half-width — and its 3D goes through a projection
++    // the eye replaces outright, keeping only the near and far planes, which
++    // have no aspect in them.
++    //
++    // The eye's own viewport is very nearly square (1856x1792 on an Apple
++    // Vision Pro, 1.04), which is *narrower* than 4:3. So the wide helpers
++    // below, handed that, inset instead of extending: a wearer reported the
++    // result as a black square appearing as the main menu loads and unloads,
++    // which is `draw_box_wide(0, 0, 320, 240)` — the menu's full-screen fade —
++    // emitted as (35, 0, 285, 240), a 250x240 box floating in the middle of a
++    // 4:3 panel. At 4:3 both helpers are the identity they should be here, and
++    // a full-screen fade is full-screen again.
++    if (SpaghettiPad_RenderStereoEnabled() != 0) {
++        return 4.0f / 3.0f;
++    }
++#endif
+     return GetInterpreter()->mCurDimensions.aspect_ratio;
+ }
+ 
 diff --git a/src/port/Game.cpp b/src/port/Game.cpp
-index 9804fe324..6e2811f79 100644
+index 9804fe324..0e85216a8 100644
 --- a/src/port/Game.cpp
 +++ b/src/port/Game.cpp
-@@ -1065,6 +1065,11 @@ extern "C"
+@@ -53,6 +53,13 @@ extern "C" {
+ // #include "engine/wasm.h"
+ }
+ 
++#ifdef __VISIONOS__
++// Defined in src/port/ui/SpaghettiPadMenuBridge.cpp. Declared here rather than
++// in a header because push_frame is its only caller and the bridge has no other
++// engine-side surface.
++extern "C" void SpaghettiPad_MenuPump(void);
++#endif
++
+ extern "C" void Graphics_PushFrame(Gfx* pool) {
+     GameEngine::ProcessGfxCommands(pool);
+ }
+@@ -979,6 +986,13 @@ static void ApplyPendingReset() {
+ 
+ void push_frame() {
+     ApplyPendingReset();
++#ifdef __VISIONOS__
++    // The native settings window's only engine-thread moment: applies whatever
++    // the wearer changed and republishes what the window reads. Costs a tree
++    // walk and a JSON encode, and only while a window is open — see
++    // src/port/ui/SpaghettiPadMenuBridge.cpp.
++    SpaghettiPad_MenuPump();
++#endif
+     GameEngine::StartAudioFrame();
+     GameEngine::Instance->StartFrame();
+     thread5_iteration();
+@@ -1065,6 +1079,11 @@ extern "C"
      thread5_game_loop();
      gEditor.Load();
      while (WindowIsRunning()) {
@@ -440,7 +625,7 @@ index 9804fe324..6e2811f79 100644
      }
      CustomEngineDestroy();
 diff --git a/src/port/GameExtractor.cpp b/src/port/GameExtractor.cpp
-index 4e8b4dfae..6746877aa 100644
+index 4e8b4dfae..ff92c2d12 100644
 --- a/src/port/GameExtractor.cpp
 +++ b/src/port/GameExtractor.cpp
 @@ -5,6 +5,8 @@
@@ -452,7 +637,21 @@ index 4e8b4dfae..6746877aa 100644
  #include <cstdio>
  #include <unordered_map>
  
-@@ -119,7 +121,29 @@ bool GameExtractor::SelectGameFromUI() {
+@@ -71,7 +73,12 @@ bool GameExtractor::SelectGameFromUI() {
+         }
+     }
+ 
+-#if !defined(__IOS__) && !defined(__ANDROID__) && !defined(__SWITCH__)
++// visionOS joins the mobile branch below. It is not __IOS__, so without this it
++// would take the desktop path and try to open a portable-file-dialogs window —
++// on a platform with no window server for one and with SDL's video subsystem
++// off. The ROM arrives through the shell's importer instead, and GetRoms above
++// is what finds it.
++#if !defined(__IOS__) && !defined(__ANDROID__) && !defined(__SWITCH__) && !defined(__VISIONOS__)
+     // Desktop: fallback to file dialogue if no baserom found
+     if (!foundGame) {
+         if (!pfd::settings::available()) {
+@@ -119,7 +126,29 @@ bool GameExtractor::SelectGameFromUI() {
  }
  
  void GameExtractor::GetRoms(std::vector<std::string>& roms) {
@@ -484,7 +683,7 @@ index 4e8b4dfae..6746877aa 100644
      HANDLE h = FindFirstFileA(".\\*", &ffd);
  
 diff --git a/src/port/SpaghettiGui.cpp b/src/port/SpaghettiGui.cpp
-index 56320e2be..1f15522dd 100644
+index 56320e2be..6a9cad038 100644
 --- a/src/port/SpaghettiGui.cpp
 +++ b/src/port/SpaghettiGui.cpp
 @@ -17,7 +17,7 @@
@@ -496,6 +695,94 @@ index 56320e2be..1f15522dd 100644
  #endif
  
  #ifdef ENABLE_OPENGL
+@@ -40,6 +40,28 @@ namespace Ship {
+ #define TOGGLE_BTN ImGuiKey_F1
+ #define TOGGLE_PAD_BTN ImGuiKey_GamepadBack
+ 
++#ifdef __VISIONOS__
++namespace {
++// Clicking both thumbsticks, on the frame the second one goes down.
++//
++// A second way in, because the first one is not guaranteed to exist. Back is
++// upstream's binding and a DualSense has it, but the PS VR2 Sense controllers
++// this lane has actually been driven with enumerate as a single combined
++// gamepad, and what SDL maps onto SDL_CONTROLLER_BUTTON_BACK for that — if
++// anything — is not something this project has been able to check. A wearer
++// whose pad reports no Back button would otherwise have no way to open the
++// menu at all and no way to find that out except by wearing the headset.
++//
++// Safe to hold in reserve during a race: MK64 binds neither stick click, so
++// this cannot be reached by playing.
++bool StickClickToggle() {
++    const bool bothDown = ImGui::IsKeyDown(ImGuiKey_GamepadL3) && ImGui::IsKeyDown(ImGuiKey_GamepadR3);
++    const bool edge = ImGui::IsKeyPressed(ImGuiKey_GamepadL3, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadR3, false);
++    return bothDown && edge;
++}
++} // namespace
++#endif
++
+ void SpaghettiGui::DrawMenu() {
+     const std::shared_ptr<Window> wnd = Context::GetInstance()->GetWindow();
+     const std::shared_ptr<Config> conf = Context::GetInstance()->GetConfig();
+@@ -104,24 +126,53 @@ void SpaghettiGui::DrawMenu() {
+ 
+     ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None | ImGuiDockNodeFlags_NoDockingInCentralNode);
+ 
+-    if (ImGui::IsKeyPressed(TOGGLE_BTN) || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+-        (ImGui::IsKeyPressed(TOGGLE_PAD_BTN) && CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0))) {
+-        if ((ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(TOGGLE_PAD_BTN)) && GetMenu()) {
++#ifdef __VISIONOS__
++    // An immersive space has no keyboard, so F1 and Escape — upstream's only two
++    // pointer-free ways into this menu — do not exist here, and the pad's Back
++    // button is gated behind a setting whose only switch is inside the menu it
++    // cannot open. The gate is removed rather than defaulted on: a default can
++    // be turned off, and on this platform turning it off is a one-way door.
++    // PortMenu.cpp accordingly stops offering the switch, as it already does for
++    // the two consoles in the same position.
++    const bool controllerNav = true;
++    const bool padToggle = ImGui::IsKeyPressed(TOGGLE_PAD_BTN) || StickClickToggle();
++#else
++    const bool controllerNav = CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0;
++    const bool padToggle = ImGui::IsKeyPressed(TOGGLE_PAD_BTN);
++#endif
++
++    if (ImGui::IsKeyPressed(TOGGLE_BTN) || ImGui::IsKeyPressed(ImGuiKey_Escape) || (padToggle && controllerNav)) {
++        if ((ImGui::IsKeyPressed(ImGuiKey_Escape) || padToggle) && GetMenu()) {
+             GetMenu()->ToggleVisibility();
+-        } else if ((ImGui::IsKeyPressed(TOGGLE_BTN) || ImGui::IsKeyPressed(TOGGLE_PAD_BTN)) && GetMenuBar()) {
++        } else if ((ImGui::IsKeyPressed(TOGGLE_BTN) || padToggle) && GetMenuBar()) {
+             Gui::GetMenuBar()->ToggleVisibility();
+         }
+         if (wnd->IsFullscreen()) {
+             Context::GetInstance()->GetWindow()->SetMouseCapture(
+                 !(GetMenuOrMenubarVisible() || wnd->ShouldForceCursorVisibility()));
+         }
+-        if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) && GetMenuOrMenubarVisible()) {
++        if (controllerNav && GetMenuOrMenubarVisible()) {
+             mImGuiIo->ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+         } else {
+             mImGuiIo->ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+         }
+     }
+ 
++#ifdef __VISIONOS__
++    // Upstream only revises this flag on the frame something was toggled, which
++    // is enough when a keyboard can always reopen the menu and is not here:
++    // anything else that shows or hides it — the menu's own close button, a
++    // window opened from a sidebar — would otherwise leave gamepad navigation
++    // in whatever state the last toggle left it, and there is no second input
++    // device to recover with. Asserting it from what is actually on screen
++    // costs a branch a frame and cannot drift.
++    if (GetMenuOrMenubarVisible()) {
++        mImGuiIo->ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
++    } else {
++        mImGuiIo->ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
++    }
++#endif
++
+ #if __APPLE__
+     if ((ImGui::IsKeyDown(ImGuiKey_LeftSuper) || ImGui::IsKeyDown(ImGuiKey_RightSuper)) &&
+         ImGui::IsKeyPressed(ImGuiKey_R, false)) {
 diff --git a/src/port/pak.cpp b/src/port/pak.cpp
 index 4adedd6a0..0bbce094c 100644
 --- a/src/port/pak.cpp
@@ -522,3 +809,810 @@ index 4adedd6a0..0bbce094c 100644
  }
  
  std::string Pfs_PakHeader_GetPath() {
+diff --git a/src/port/ui/Menu.cpp b/src/port/ui/Menu.cpp
+index 8a4f26104..2d5346215 100644
+--- a/src/port/ui/Menu.cpp
++++ b/src/port/ui/Menu.cpp
+@@ -8,6 +8,15 @@
+ #include <variant>
+ #include <tuple>
+ 
++#ifdef __VISIONOS__
++// Defined by the visionOS shell (visionos/SpaghettiPadBridge.h). Weak with a
++// zero default so libultraship-less builds and every other platform draw the
++// ImGui menu exactly as they did.
++extern "C" __attribute__((weak)) int SpaghettiPad_MenuUsesNativeWindow(void) {
++    return 0;
++}
++#endif
++
+ extern "C" {
+     extern s32 gGamestateNext;
+     extern s32 gMenuSelection;
+@@ -467,6 +476,20 @@ void Menu::Draw() {
+     if (!IsVisible()) {
+         return;
+     }
++#ifdef __VISIONOS__
++    // The menu is *visible* but it is not drawn here: a native SwiftUI window is
++    // showing it instead. Everything else about being visible still holds — game
++    // input stays blocked, the visibility CVar still tracks, and the shell is
++    // still told — because a wearer reading settings must not also be driving.
++    //
++    // Returning before DrawElement rather than never becoming visible is what
++    // keeps the two front ends interchangeable: turn the native window off and
++    // the ImGui menu draws again with no other state to put back.
++    if (SpaghettiPad_MenuUsesNativeWindow() != 0) {
++        SyncVisibilityConsoleVariable();
++        return;
++    }
++#endif
+     DrawElement();
+     // Sync up the IsVisible flag if it was changed by ImGui
+     SyncVisibilityConsoleVariable();
+@@ -693,6 +716,25 @@ void Menu::DrawElement() {
+     if (!sidebar->contains(sectionIndex)) {
+         sectionIndex = sidebar->begin()->first;
+     }
++
++#ifdef __VISIONOS__
++    // Which page is on screen, once per change.
++    //
++    // An Apple Vision Pro refuses `devicectl device capture screenshot`, so a
++    // wearer's session leaves no picture of anything. This pair of strings is
++    // the whole of what a log archive can say about where in the settings a
++    // person actually got to, and "every settings page operable" is a claim
++    // that needs naming the pages rather than counting them.
++    {
++        static std::string reported;
++        const std::string page = headerIndex + " / " + sectionIndex;
++        if (page != reported) {
++            reported = page;
++            SPDLOG_INFO("[menu] page {}", page);
++        }
++    }
++#endif
++
+     float sectionCenterX = pos.x + (sidebarWidth / 2);
+     float topY = pos.y;
+     ImGui::SetNextWindowSizeConstraints({ sidebarWidth, 0 }, { sidebarWidth, columnHeight });
+diff --git a/src/port/ui/Menu.h b/src/port/ui/Menu.h
+index 7e84e5d26..8d77eb49b 100644
+--- a/src/port/ui/Menu.h
++++ b/src/port/ui/Menu.h
+@@ -38,6 +38,19 @@ class Menu : public GuiWindow {
+     void AddMenuEntry(std::string entryName, const char* entryCvar);
+     std::unordered_map<uint32_t, disabledInfo>& GetDisabledMap();
+ 
++    // The declared menu, for a front end that is not ImGui.
++    //
++    // visionOS draws this menu as a native SwiftUI window and needs to read the
++    // same tree the ImGui path draws from — see
++    // src/port/ui/SpaghettiPadMenuBridge.cpp. Exposed rather than duplicated so
++    // the two front ends cannot disagree about what the menu contains.
++    const std::unordered_map<std::string, MainMenuEntry>& GetMenuEntries() const {
++        return menuEntries;
++    }
++    const std::vector<std::string>& GetMenuOrder() const {
++        return menuOrder;
++    }
++
+   protected:
+     ImVec2 mOriginalSize;
+     std::string mName;
+diff --git a/src/port/ui/PortMenu.cpp b/src/port/ui/PortMenu.cpp
+index 69e887481..903a2eead 100644
+--- a/src/port/ui/PortMenu.cpp
++++ b/src/port/ui/PortMenu.cpp
+@@ -18,6 +18,16 @@
+ #include <ship/port/switch/SwitchImpl.h>
+ #endif
+ 
++#ifdef __VISIONOS__
++// Defined by the visionOS shell (visionos/SpaghettiPadAccessorySteering.mm).
++// Declared here rather than by including SpaghettiPadBridge.h so the shell's
++// directory stays off this target's include path — the same reason
++// ControlDeck.cpp declares its half inline.
++extern "C" void SpaghettiPad_SetMotionSteeringEnabled(int enabled);
++extern "C" void SpaghettiPad_SetMotionSensitivity(float sensitivity);
++extern "C" void SpaghettiPad_RecenterMotionSteering(void);
++#endif
++
+ extern "C" {
+ extern s32 gGamestateNext;
+ extern s32 gMenuSelection;
+@@ -138,7 +148,11 @@ void PortMenu::AddSettings() {
+         .CVar("gControllerPakScreen")
+         .Options(CheckboxOptions().Tooltip(
+             "Enables the Controller Pak screen when starting the game."));
+-#if not defined(__SWITCH__) and not defined(__WIIU__)
++// visionOS joins the two consoles here for the same reason they are excluded:
++// the pad is the only pointer there is. Offering a switch that turns off the one
++// way into this menu — from inside that menu — is a trap, and "Cursor Always
++// Visible" below is describing a cursor an immersive space does not have.
++#if not defined(__SWITCH__) and not defined(__WIIU__) and not defined(__VISIONOS__)
+     AddWidget(path, "Menu Controller Navigation", WIDGET_CVAR_CHECKBOX)
+         .CVar(CVAR_IMGUI_CONTROLLER_NAV)
+         .Options(CheckboxOptions().Tooltip(
+@@ -152,6 +166,39 @@ void PortMenu::AddSettings() {
+                 CVarGetInteger("gSettings.CursorVisibility", 0));
+         })
+         .Options(CheckboxOptions().Tooltip("Makes the cursor always visible, even in full screen."));
++#endif
++#ifdef __VISIONOS__
++    // Steering with the Sense pair's tracked positions rather than a thumbstick.
++    // Every one of these reaches the shell twice: the CVar so the choice
++    // survives a relaunch, and the call so it takes effect now.
++    AddWidget(path, "6DoF Steering", WIDGET_CVAR_CHECKBOX)
++        .CVar("gSettings.SpaghettiPad.MotionSteering")
++        .Callback([](WidgetInfo& info) {
++            SpaghettiPad_SetMotionSteeringEnabled(CVarGetInteger("gSettings.SpaghettiPad.MotionSteering", 0));
++        })
++        .Options(CheckboxOptions()
++                     .DefaultValue(false)
++                     .Tooltip("Steers by holding both Sense controllers like a steering wheel: raise "
++                              "the right hand to turn left, the left hand to turn right. Needs both "
++                              "controllers held and tracked. The left stick takes priority whenever "
++                              "it is pushed."));
++    AddWidget(path, "6DoF Steering Sensitivity: %.1fx", WIDGET_CVAR_SLIDER_FLOAT)
++        .CVar("gSettings.SpaghettiPad.MotionSensitivity")
++        .Callback([](WidgetInfo& info) {
++            SpaghettiPad_SetMotionSensitivity(CVarGetFloat("gSettings.SpaghettiPad.MotionSensitivity", 1.0f));
++        })
++        .Options(FloatSliderOptions()
++                     .Min(0.5f)
++                     .Max(2.0f)
++                     .Step(0.1f)
++                     .DefaultValue(1.0f)
++                     .Format("%.1fx")
++                     .Tooltip("How far the wheel has to turn for full lock. 1.0x is about 40 degrees; "
++                              "higher is twitchier."));
++    AddWidget(path, "Recenter 6DoF Steering", WIDGET_BUTTON)
++        .Callback([](WidgetInfo& info) { SpaghettiPad_RecenterMotionSteering(); })
++        .Options(ButtonOptions().Tooltip("Takes however you are holding the controllers right now as "
++                                         "straight ahead."));
+ #endif
+     AddWidget(path, "Search In Sidebar", WIDGET_CVAR_CHECKBOX)
+         .CVar("gSettings.Menu.SidebarSearch")
+diff --git a/src/port/ui/SpaghettiPadMenuBridge.cpp b/src/port/ui/SpaghettiPadMenuBridge.cpp
+new file mode 100644
+index 000000000..4a6038adf
+--- /dev/null
++++ b/src/port/ui/SpaghettiPadMenuBridge.cpp
+@@ -0,0 +1,636 @@
++// The settings menu, as data, for a native SwiftUI window to draw.
++//
++// visionOS is the one platform where the ImGui menu is genuinely the wrong
++// answer. Everywhere else it is drawn into a window a person is already looking
++// at with a mouse; here it is drawn into the game's own framebuffer, which is a
++// texture floating in a room, at a size and a font chosen for a monitor. The
++// wearer reads it at two metres.
++//
++// What this file does *not* do is re-describe the menu. Upstream already
++// declares it — `PortMenu::AddSettings()` and friends build a tree of
++// `WidgetInfo`, each with a label, a CVar, a type, an options struct and a
++// tooltip — and hand-copying 119 of those into Swift would produce a second
++// source of truth that goes stale the first time upstream adds a checkbox. So
++// the tree is walked and published as JSON, and the Swift side is a renderer for
++// whatever it finds rather than a transcription of what was there today.
++//
++// Threading, which is the whole of the difficulty. The tree, the CVars and the
++// widgets' own callbacks are engine-thread state; SwiftUI is the main actor.
++// Nothing here is called across that line directly:
++//
++//   - the engine builds a snapshot at the top of a frame and publishes it under
++//     a mutex; the shell copies the last published one and never blocks on a
++//     frame;
++//   - the shell queues changes; the engine drains that queue at the top of the
++//     next frame and runs each widget's callback there, which is the same thread
++//     the ImGui menu would have run it on.
++//
++// The precedent for both is ApplyPendingReset in Game.cpp: request on any
++// thread, apply at the top of the next game frame.
++
++#ifdef __VISIONOS__
++
++#include "PortMenu.h"
++#include "MenuTypes.h"
++#include "UIWidgets.h"
++
++#include <libultraship/libultraship.h>
++
++#include <nlohmann/json.hpp>
++
++#include <algorithm>
++#include <atomic>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <variant>
++#include <vector>
++
++namespace GameUI {
++extern std::shared_ptr<PortMenu> mPortMenu;
++}
++
++namespace {
++
++// A widget, found. `info` points into the menu's own tree, which outlives every
++// snapshot: the tree is built once in PortMenu::InitElement and only the search
++// sidebar is ever inserted or removed after that.
++struct FlatWidget {
++    std::string section;
++    std::string page;
++    WidgetInfo* info = nullptr;
++};
++
++std::vector<FlatWidget> gFlat;
++
++// Bumped whenever the shape changes, so the shell knows to re-read the
++// structure rather than only the values. The search sidebar going in and out is
++// the one thing that moves it in practice.
++std::atomic<uint32_t> gGeneration{0};
++
++// What the shell reads. Both are whole JSON documents, replaced wholesale.
++std::mutex gPublishMutex;
++std::string gPublishedStructure;
++std::string gPublishedValues;
++
++// What the shell has asked for. Snapshotting costs a tree walk and a JSON
++// encode per frame, so it only happens while a window is actually open.
++std::atomic<bool> gPolling{false};
++
++// A change the shell made, waiting for a thread that may run callbacks.
++struct PendingEdit {
++    enum class Kind { Int, Float, Color, Activate } kind = Kind::Int;
++    int id = 0;
++    int32_t intValue = 0;
++    float floatValue = 0.0f;
++    uint32_t colorValue = 0;
++};
++
++std::mutex gEditMutex;
++std::vector<PendingEdit> gPendingEdits;
++
++// -1 for "nothing asked", otherwise the visibility the shell wants. A single
++// atomic rather than a queue entry because only the latest answer matters: a
++// window opened and closed twice before the engine ran a frame should end up
++// closed, not toggled twice.
++std::atomic<int> gPendingVisibility{ -1 };
++
++const char* TypeName(WidgetType type) {
++    switch (type) {
++        case WIDGET_CHECKBOX:
++        case WIDGET_CVAR_CHECKBOX:
++            return "checkbox";
++        case WIDGET_COMBOBOX:
++        case WIDGET_CVAR_COMBOBOX:
++            return "combobox";
++        case WIDGET_SLIDER_INT:
++        case WIDGET_CVAR_SLIDER_INT:
++            return "sliderInt";
++        case WIDGET_SLIDER_FLOAT:
++        case WIDGET_CVAR_SLIDER_FLOAT:
++            return "sliderFloat";
++        case WIDGET_BUTTON:
++            return "button";
++        case WIDGET_COLOR_24:
++            return "color24";
++        case WIDGET_COLOR_32:
++            return "color32";
++        case WIDGET_SEARCH:
++            return "search";
++        case WIDGET_SEPARATOR:
++            return "separator";
++        case WIDGET_SEPARATOR_TEXT:
++            return "separatorText";
++        case WIDGET_TEXT:
++            return "text";
++        case WIDGET_WINDOW_BUTTON:
++            return "windowButton";
++        case WIDGET_AUDIO_BACKEND:
++            return "audioBackend";
++        case WIDGET_VIDEO_BACKEND:
++            return "videoBackend";
++        case WIDGET_CUSTOM:
++            return "custom";
++    }
++    return "unknown";
++}
++
++// Whether a widget's value lives in a CVar, as opposed to a raw pointer the
++// menu owns. The pointer kinds exist for things like the fullscreen toggle,
++// which reflects window state rather than a setting, and they are read and
++// written through `valuePointer` instead.
++bool IsCVarBacked(WidgetType type) {
++    switch (type) {
++        case WIDGET_CVAR_CHECKBOX:
++        case WIDGET_CVAR_COMBOBOX:
++        case WIDGET_CVAR_SLIDER_INT:
++        case WIDGET_CVAR_SLIDER_FLOAT:
++        case WIDGET_COLOR_24:
++        case WIDGET_COLOR_32:
++            return true;
++        default:
++            return false;
++    }
++}
++
++// Walks the menu in the order a person reads it: header order, then that
++// header's own sidebar order, then column by column. The index into this vector
++// is the id the shell uses for everything afterwards, so the walk has to be
++// deterministic — which is why it follows `menuOrder` and `sidebarOrder` rather
++// than iterating the unordered_maps they index.
++void Rebuild() {
++    gFlat.clear();
++
++    const std::shared_ptr<GameUI::PortMenu>& menu = GameUI::mPortMenu;
++    if (menu == nullptr) {
++        return;
++    }
++
++    for (const std::string& sectionName : menu->GetMenuOrder()) {
++        auto sectionIt = menu->GetMenuEntries().find(sectionName);
++        if (sectionIt == menu->GetMenuEntries().end()) {
++            continue;
++        }
++        MainMenuEntry& section = const_cast<MainMenuEntry&>(sectionIt->second);
++
++        for (const std::string& pageName : section.sidebarOrder) {
++            auto pageIt = section.sidebars.find(pageName);
++            if (pageIt == section.sidebars.end()) {
++                continue;
++            }
++            SidebarEntry& page = const_cast<SidebarEntry&>(pageIt->second);
++
++            for (std::vector<WidgetInfo>& column : page.columnWidgets) {
++                for (WidgetInfo& widget : column) {
++                    gFlat.push_back({ sectionName, pageName, &widget });
++                }
++            }
++        }
++    }
++}
++
++// True when the tree is no longer the shape the flat list was built from. Cheap
++// enough to run every frame and cheaper than rebuilding blind.
++bool ShapeChanged() {
++    const std::shared_ptr<GameUI::PortMenu>& menu = GameUI::mPortMenu;
++    if (menu == nullptr) {
++        return !gFlat.empty();
++    }
++
++    size_t count = 0;
++    for (const std::string& sectionName : menu->GetMenuOrder()) {
++        auto sectionIt = menu->GetMenuEntries().find(sectionName);
++        if (sectionIt == menu->GetMenuEntries().end()) {
++            continue;
++        }
++        for (const std::string& pageName : sectionIt->second.sidebarOrder) {
++            auto pageIt = sectionIt->second.sidebars.find(pageName);
++            if (pageIt == sectionIt->second.sidebars.end()) {
++                continue;
++            }
++            for (const std::vector<WidgetInfo>& column : pageIt->second.columnWidgets) {
++                count += column.size();
++            }
++        }
++    }
++    return count != gFlat.size();
++}
++
++void EncodeOptions(nlohmann::json& out, const FlatWidget& flat) {
++    const WidgetInfo& widget = *flat.info;
++    if (widget.options == nullptr) {
++        return;
++    }
++
++    out["tooltip"] = widget.options->tooltip != nullptr ? widget.options->tooltip : "";
++
++    switch (widget.type) {
++        case WIDGET_CHECKBOX:
++        case WIDGET_CVAR_CHECKBOX: {
++            const auto* options = static_cast<const UIWidgets::CheckboxOptions*>(widget.options.get());
++            out["default"] = options->defaultValue ? 1 : 0;
++            break;
++        }
++        case WIDGET_COMBOBOX:
++        case WIDGET_CVAR_COMBOBOX:
++        case WIDGET_AUDIO_BACKEND:
++        case WIDGET_VIDEO_BACKEND: {
++            const auto* options = static_cast<const UIWidgets::ComboboxOptions*>(widget.options.get());
++            out["default"] = static_cast<int32_t>(options->defaultIndex);
++            // Sorted by value: comboMap is unordered, and a picker whose entries
++            // shuffle between snapshots is unusable.
++            std::vector<std::pair<int32_t, const char*>> entries(options->comboMap.begin(),
++                                                                options->comboMap.end());
++            std::sort(entries.begin(), entries.end(),
++                      [](const auto& a, const auto& b) { return a.first < b.first; });
++            for (const auto& [value, label] : entries) {
++                out["entries"].push_back({ { "value", value }, { "label", label != nullptr ? label : "" } });
++            }
++            break;
++        }
++        case WIDGET_SLIDER_INT:
++        case WIDGET_CVAR_SLIDER_INT: {
++            const auto* options = static_cast<const UIWidgets::IntSliderOptions*>(widget.options.get());
++            out["min"] = options->min;
++            out["max"] = options->max;
++            out["step"] = options->step;
++            out["default"] = options->defaultValue;
++            out["format"] = options->format != nullptr ? options->format : "%d";
++            break;
++        }
++        case WIDGET_SLIDER_FLOAT:
++        case WIDGET_CVAR_SLIDER_FLOAT: {
++            const auto* options = static_cast<const UIWidgets::FloatSliderOptions*>(widget.options.get());
++            out["min"] = options->min;
++            out["max"] = options->max;
++            out["step"] = options->step;
++            out["default"] = options->defaultValue;
++            out["format"] = options->format != nullptr ? options->format : "%f";
++            out["isPercentage"] = options->isPercentage;
++            break;
++        }
++        default:
++            break;
++    }
++}
++
++std::string BuildStructure() {
++    nlohmann::json root;
++    root["generation"] = gGeneration.load(std::memory_order_acquire);
++
++    // Rebuilt as a nested document even though the walk is flat, because the
++    // shell draws sections and pages and should not have to re-derive them by
++    // grouping on a string.
++    nlohmann::json sections = nlohmann::json::array();
++    std::string currentSection;
++    std::string currentPage;
++
++    for (size_t i = 0; i < gFlat.size(); i++) {
++        const FlatWidget& flat = gFlat[i];
++
++        if (sections.empty() || currentSection != flat.section) {
++            sections.push_back({ { "name", flat.section }, { "pages", nlohmann::json::array() } });
++            currentSection = flat.section;
++            currentPage.clear();
++        }
++        nlohmann::json& section = sections.back();
++
++        if (section["pages"].empty() || currentPage != flat.page) {
++            section["pages"].push_back({ { "name", flat.page }, { "widgets", nlohmann::json::array() } });
++            currentPage = flat.page;
++        }
++
++        nlohmann::json widget;
++        widget["id"] = static_cast<int>(i);
++        widget["type"] = TypeName(flat.info->type);
++        widget["label"] = flat.info->name;
++        widget["cvar"] = flat.info->cVar != nullptr ? flat.info->cVar : "";
++        widget["window"] = flat.info->windowName != nullptr ? flat.info->windowName : "";
++        EncodeOptions(widget, flat);
++
++        section["pages"].back()["widgets"].push_back(std::move(widget));
++    }
++
++    root["sections"] = std::move(sections);
++    return root.dump();
++}
++
++// The current value of one widget, in whatever kind it is stored.
++double ReadValue(const FlatWidget& flat) {
++    const WidgetInfo& widget = *flat.info;
++
++    // Whether the ImGui window this button opens is open right now, so the
++    // native control can show it as on rather than as a button that does
++    // something invisible.
++    if (widget.type == WIDGET_WINDOW_BUTTON) {
++        if (widget.windowName == nullptr || widget.windowName[0] == '\0') {
++            return 0.0;
++        }
++        auto window = Ship::Context::GetInstance()->GetWindow()->GetGui()->GetGuiWindow(widget.windowName);
++        return window != nullptr && window->IsVisible() ? 1.0 : 0.0;
++    }
++
++    if (IsCVarBacked(widget.type)) {
++        if (widget.cVar == nullptr) {
++            return 0.0;
++        }
++        switch (widget.type) {
++            case WIDGET_CVAR_SLIDER_FLOAT:
++                return CVarGetFloat(widget.cVar, 0.0f);
++            case WIDGET_COLOR_24: {
++                const Color_RGB8 color = CVarGetColor24(widget.cVar, Color_RGB8{ 0, 0, 0 });
++                return static_cast<double>((static_cast<uint32_t>(color.r) << 16) |
++                                           (static_cast<uint32_t>(color.g) << 8) |
++                                           static_cast<uint32_t>(color.b));
++            }
++            case WIDGET_COLOR_32: {
++                const Color_RGBA8 color = CVarGetColor(widget.cVar, Color_RGBA8{ 0, 0, 0, 255 });
++                return static_cast<double>((static_cast<uint32_t>(color.r) << 24) |
++                                           (static_cast<uint32_t>(color.g) << 16) |
++                                           (static_cast<uint32_t>(color.b) << 8) |
++                                           static_cast<uint32_t>(color.a));
++            }
++            default:
++                return CVarGetInteger(widget.cVar, 0);
++        }
++    }
++
++    // Pointer-backed widgets reflect live state — window fullscreen, a backend
++    // selection — which preFunc has just refreshed.
++    if (std::holds_alternative<bool*>(widget.valuePointer)) {
++        bool* value = std::get<bool*>(widget.valuePointer);
++        return value != nullptr && *value ? 1.0 : 0.0;
++    }
++    if (std::holds_alternative<int32_t*>(widget.valuePointer)) {
++        int32_t* value = std::get<int32_t*>(widget.valuePointer);
++        return value != nullptr ? *value : 0.0;
++    }
++    if (std::holds_alternative<float*>(widget.valuePointer)) {
++        float* value = std::get<float*>(widget.valuePointer);
++        return value != nullptr ? *value : 0.0;
++    }
++    return 0.0;
++}
++
++std::string BuildValues() {
++    nlohmann::json root;
++    root["generation"] = gGeneration.load(std::memory_order_acquire);
++
++    // Compact triples rather than named objects: this document is rebuilt every
++    // frame the window is open, and 119 objects of three keys each is a lot of
++    // punctuation to encode and parse sixty times a second.
++    nlohmann::json values = nlohmann::json::array();
++    for (size_t i = 0; i < gFlat.size(); i++) {
++        const WidgetInfo& widget = *gFlat[i].info;
++        uint32_t flags = 0;
++        if (widget.isHidden) {
++            flags |= 1u;
++        }
++        if (widget.options != nullptr && widget.options->disabled) {
++            flags |= 2u;
++        }
++        if (!widget.activeDisables.empty()) {
++            flags |= 2u;
++        }
++        values.push_back({ static_cast<int>(i), ReadValue(gFlat[i]), flags });
++    }
++
++    root["values"] = std::move(values);
++    return root.dump();
++}
++
++void ApplyEdit(const PendingEdit& edit) {
++    if (edit.id < 0 || static_cast<size_t>(edit.id) >= gFlat.size()) {
++        return;
++    }
++    WidgetInfo& widget = *gFlat[edit.id].info;
++
++    switch (edit.kind) {
++        case PendingEdit::Kind::Int:
++            if (IsCVarBacked(widget.type) && widget.cVar != nullptr) {
++                CVarSetInteger(widget.cVar, edit.intValue);
++            } else if (std::holds_alternative<bool*>(widget.valuePointer)) {
++                bool* value = std::get<bool*>(widget.valuePointer);
++                if (value != nullptr) {
++                    *value = edit.intValue != 0;
++                }
++            } else if (std::holds_alternative<int32_t*>(widget.valuePointer)) {
++                int32_t* value = std::get<int32_t*>(widget.valuePointer);
++                if (value != nullptr) {
++                    *value = edit.intValue;
++                }
++            }
++            break;
++        case PendingEdit::Kind::Float:
++            if (IsCVarBacked(widget.type) && widget.cVar != nullptr) {
++                CVarSetFloat(widget.cVar, edit.floatValue);
++            } else if (std::holds_alternative<float*>(widget.valuePointer)) {
++                float* value = std::get<float*>(widget.valuePointer);
++                if (value != nullptr) {
++                    *value = edit.floatValue;
++                }
++            }
++            break;
++        case PendingEdit::Kind::Color:
++            if (widget.cVar == nullptr) {
++                break;
++            }
++            if (widget.type == WIDGET_COLOR_24) {
++                CVarSetColor24(widget.cVar,
++                               Color_RGB8{ static_cast<uint8_t>((edit.colorValue >> 16) & 0xFF),
++                                           static_cast<uint8_t>((edit.colorValue >> 8) & 0xFF),
++                                           static_cast<uint8_t>(edit.colorValue & 0xFF) });
++            } else {
++                CVarSetColor(widget.cVar,
++                             Color_RGBA8{ static_cast<uint8_t>((edit.colorValue >> 24) & 0xFF),
++                                          static_cast<uint8_t>((edit.colorValue >> 16) & 0xFF),
++                                          static_cast<uint8_t>((edit.colorValue >> 8) & 0xFF),
++                                          static_cast<uint8_t>(edit.colorValue & 0xFF) });
++            }
++            break;
++        case PendingEdit::Kind::Activate:
++            // A window button is a toggle wearing a button's clothes: upstream's
++            // UIWidgets::WindowButton flips a GuiWindow's visibility and stores
++            // it in the widget's CVar. The ImGui debug windows behind these —
++            // the Gfx debugger, the console, the stats overlay — have no native
++            // equivalent and are not going to get one, so the native menu opens
++            // them exactly as the ImGui menu did.
++            if (widget.type == WIDGET_WINDOW_BUTTON && widget.windowName != nullptr &&
++                widget.windowName[0] != '\0') {
++                auto window = Ship::Context::GetInstance()->GetWindow()->GetGui()->GetGuiWindow(widget.windowName);
++                if (window != nullptr) {
++                    window->IsVisible() ? window->Hide() : window->Show();
++                }
++            }
++            break;
++    }
++
++    // The widget's own callback, on the thread that would have run it if a
++    // person had clicked the ImGui version. This is where "Reset to defaults"
++    // resets, where the fullscreen toggle toggles, and where 6DoF steering
++    // reaches the shell — skipping it would set the CVar and change nothing.
++    if (widget.callback != nullptr) {
++        widget.callback(widget);
++    }
++
++    // Upstream saves on change; a wearer who closes the app without ever
++    // opening the ImGui menu should not lose what they set.
++    Ship::Context::GetInstance()->GetConsoleVariables()->Save();
++}
++
++void DrainEdits() {
++    std::vector<PendingEdit> edits;
++    {
++        std::lock_guard<std::mutex> lock(gEditMutex);
++        edits.swap(gPendingEdits);
++    }
++    for (const PendingEdit& edit : edits) {
++        ApplyEdit(edit);
++    }
++}
++
++void QueueEdit(const PendingEdit& edit) {
++    std::lock_guard<std::mutex> lock(gEditMutex);
++    // Bounded so a shell that queues faster than the engine drains — a slider
++    // being dragged while the game is paused on a loading screen — cannot grow
++    // this without limit. The newest edit is the one that matters.
++    constexpr size_t kMaxPending = 256;
++    if (gPendingEdits.size() >= kMaxPending) {
++        gPendingEdits.erase(gPendingEdits.begin());
++    }
++    gPendingEdits.push_back(edit);
++}
++
++int CopyOut(const std::string& source, char* out, int capacity) {
++    const int needed = static_cast<int>(source.size());
++    if (out != nullptr && capacity > 0) {
++        const int copied = needed < capacity - 1 ? needed : capacity - 1;
++        std::memcpy(out, source.data(), static_cast<size_t>(copied));
++        out[copied] = '\0';
++    }
++    return needed;
++}
++
++} // namespace
++
++// ------------------------------------------------------------------- engine
++
++// Called from push_frame, on the engine thread, once per game frame. Everything
++// that touches the tree, the CVars or a widget's callback happens here.
++extern "C" void SpaghettiPad_MenuPump(void) {
++    DrainEdits();
++
++    const std::shared_ptr<GameUI::PortMenu>& menu = GameUI::mPortMenu;
++
++    // Ahead of the polling check: a window that has just been closed turns
++    // polling off in the same breath, and this is the request that has to land
++    // anyway or the game stays paused behind a window that is gone.
++    const int wantedVisibility = gPendingVisibility.exchange(-1, std::memory_order_acq_rel);
++    if (wantedVisibility >= 0 && menu != nullptr) {
++        wantedVisibility != 0 ? menu->Show() : menu->Hide();
++    }
++
++    if (!gPolling.load(std::memory_order_acquire)) {
++        return;
++    }
++
++    if (menu == nullptr) {
++        return;
++    }
++
++    bool structureChanged = false;
++    if (gFlat.empty() || ShapeChanged()) {
++        Rebuild();
++        gGeneration.fetch_add(1, std::memory_order_acq_rel);
++        structureChanged = true;
++    }
++
++    // The two things Menu::DrawElement does before it draws anything, and the
++    // reason a widget knows whether it is hidden. Neither touches ImGui, which
++    // is what makes running them outside a draw frame legitimate rather than
++    // merely convenient.
++    for (auto& [reason, info] : menu->GetDisabledMap()) {
++        info.active = info.evaluation(info);
++    }
++    for (FlatWidget& flat : gFlat) {
++        flat.info->activeDisables.clear();
++        if (flat.info->preFunc != nullptr) {
++            flat.info->preFunc(*flat.info);
++        }
++    }
++
++    std::string structure;
++    if (structureChanged) {
++        structure = BuildStructure();
++    }
++    std::string values = BuildValues();
++
++    {
++        std::lock_guard<std::mutex> lock(gPublishMutex);
++        if (structureChanged) {
++            gPublishedStructure = std::move(structure);
++        }
++        gPublishedValues = std::move(values);
++    }
++}
++
++// -------------------------------------------------------------------- shell
++
++extern "C" void SpaghettiPad_MenuSetPolling(int wanted) {
++    gPolling.store(wanted != 0, std::memory_order_release);
++}
++
++extern "C" uint32_t SpaghettiPad_MenuGeneration(void) {
++    return gGeneration.load(std::memory_order_acquire);
++}
++
++extern "C" int SpaghettiPad_MenuStructureJSON(char* out, int capacity) {
++    std::lock_guard<std::mutex> lock(gPublishMutex);
++    return CopyOut(gPublishedStructure, out, capacity);
++}
++
++extern "C" int SpaghettiPad_MenuValuesJSON(char* out, int capacity) {
++    std::lock_guard<std::mutex> lock(gPublishMutex);
++    return CopyOut(gPublishedValues, out, capacity);
++}
++
++extern "C" void SpaghettiPad_MenuSetInt(int id, int value) {
++    PendingEdit edit;
++    edit.kind = PendingEdit::Kind::Int;
++    edit.id = id;
++    edit.intValue = value;
++    QueueEdit(edit);
++}
++
++extern "C" void SpaghettiPad_MenuSetFloat(int id, float value) {
++    PendingEdit edit;
++    edit.kind = PendingEdit::Kind::Float;
++    edit.id = id;
++    edit.floatValue = value;
++    QueueEdit(edit);
++}
++
++extern "C" void SpaghettiPad_MenuSetColor(int id, uint32_t rgba) {
++    PendingEdit edit;
++    edit.kind = PendingEdit::Kind::Color;
++    edit.id = id;
++    edit.colorValue = rgba;
++    QueueEdit(edit);
++}
++
++extern "C" void SpaghettiPad_MenuActivate(int id) {
++    PendingEdit edit;
++    edit.kind = PendingEdit::Kind::Activate;
++    edit.id = id;
++    QueueEdit(edit);
++}
++
++// The wearer closed the native window, so the menu is no longer visible — which
++// the engine has to be told, or it goes on blocking game input for a menu that
++// is not on screen. Queued like everything else: menu visibility is ImGui state
++// and belongs to the engine thread.
++extern "C" void SpaghettiPad_MenuRequestVisible(int visible) {
++    gPendingVisibility.store(visible != 0 ? 1 : 0, std::memory_order_release);
++}
++
++#endif // __VISIONOS__

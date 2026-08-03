@@ -1,9 +1,12 @@
-name: SpaghettiPad iOS build
+name: SpaghettiPad iOS build (retired lane)
 
+# The iPadOS lane was retired on 2026-08-01 when the project pivoted to
+# visionOS. This workflow is kept rather than deleted because Preview 3 is a
+# published artifact and this is what reproduces it, but it no longer runs on
+# push or pull request: nothing in the visionOS lane can change its result, and
+# a retired lane's failures would sit on every commit claiming something is
+# broken that nobody is maintaining. Run it deliberately, from the Actions tab.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:

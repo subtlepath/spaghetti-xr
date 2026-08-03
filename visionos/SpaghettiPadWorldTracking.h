@@ -54,8 +54,11 @@ public:
     DevicePose PoseAtTime(CFTimeInterval time);
 
     // The one ar_session_t this app will ever own. ARKit permits a single
-    // session, so Phase 5's accessory tracking has to join this one rather than
-    // create a second; SpaghettiPad_ARSession() exposes it for exactly that.
+    // session, so Phase 5's accessory tracking joins this one rather than
+    // creating a second — it does so inside Start(), before the session runs, so
+    // that turning steering on never re-runs a session the compositor is already
+    // drawing from. SpaghettiPad_ARSession() still exposes it for anything that
+    // needs the session itself.
     ar_session_t Session() const { return session_; }
 
     // There is deliberately no Stop(). The session outlives every immersive

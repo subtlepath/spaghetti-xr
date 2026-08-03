@@ -12,6 +12,7 @@
 // the compositor straight to SpaghettiPadCompositor.mm and returns.
 
 import CompositorServices
+import Metal
 import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
@@ -22,6 +23,12 @@ private let log = Logger(subsystem: "com.subtlepath.spaghettipad", category: "ap
 private struct RuntimeStatus {
     var ready = false
     var hasGameArchive = false
+    /// A ROM is in the container and nothing has turned it into a game archive
+    /// yet. Starting the engine in this state means extracting.
+    var extractionPending = false
+    /// The previous launch started extracting and never produced an archive.
+    /// Fixed for the lifetime of the process by the shell.
+    var extractionFailed = false
     var documentsPath = ""
 
     static func prepare() -> RuntimeStatus {
@@ -31,6 +38,8 @@ private struct RuntimeStatus {
         return RuntimeStatus(
             ready: ready,
             hasGameArchive: ready && SpaghettiPad_GameArchiveReady() != 0,
+            extractionPending: ready && SpaghettiPad_ExtractionPending() != 0,
+            extractionFailed: ready && SpaghettiPad_PreviousExtractionFailed() != 0,
             documentsPath: documents
         )
     }
@@ -87,48 +96,105 @@ private struct SpaghettiPadLayerConfiguration: CompositorLayerConfiguration {
         let foveation = capabilities.supportsFoveation
         configuration.isFoveationEnabled = foveation
 
-        // One texture per eye, not one texture array with a slice per eye.
+        // One texture array with a slice per eye, because progressive
+        // immersion admits nothing else.
         //
-        // `layered` is the efficient choice and was chosen here until a real
-        // headset ran it. An Apple Vision Pro hands back **two views, one
-        // texture and one rasterization rate map**, because under that layout
-        // the single map carries a layer per eye and the layer is selected by
-        // the `render_target_array_index` a vertex shader emits. This renderer
-        // draws one pass per view and selects the eye by the attachment's
-        // slice, so both eyes rasterized through layer 0 — the left eye's
-        // foveation pattern — and the wearer saw a uniform grid in the left eye
-        // and a warped one in the right.
+        // This was `dedicated` — one texture per eye — and the reason is worth
+        // keeping, because it is the bug this layout has to not reintroduce.
+        // An Apple Vision Pro hands `layered` back as **two views, one texture
+        // and one rasterization rate map**, since under that layout the single
+        // map carries a layer per eye and the layer is selected by the
+        // `render_target_array_index` a vertex shader emits. The renderer drew
+        // one pass per view and selected the eye by the attachment's slice, so
+        // both eyes rasterized through layer 0 — the left eye's foveation
+        // pattern — and the wearer saw a uniform grid in the left eye and a
+        // warped one in the right. `dedicated` gave each view its own texture
+        // and own rate map, which sidestepped it.
         //
-        // Fixing that inside `layered` means vertex amplification in all four
-        // shader programs. This app draws a textured quad, a grid and a
-        // gradient per eye; the second pass costs less than that rewrite, and
-        // `dedicated` gives each view its own texture and its own rate map, so
-        // foveation stays on and lands on the right eye.
-        let options: LayerRenderer.Capabilities.SupportedLayoutsOptions =
-            foveation ? [.foveationEnabled] : []
+        // Progressive immersion closes that exit. The portal is drawn by a
+        // drawable render context, and a render context refuses every layout
+        // but `layered` on a drawable with more than one view. So the renderer
+        // now does what it declined to do then: every vertex program emits its
+        // view's `render_target_array_index`, all views are encoded into one
+        // layered pass, and the rate map's per-eye layer follows the index the
+        // shader emits. See SpaghettiPadCompositor.mm's EncodeViews.
+        var options: LayerRenderer.Capabilities.SupportedLayoutsOptions =
+            [.progressiveImmersionEnabled]
+        if foveation {
+            options.insert(.foveationEnabled)
+        }
         let layouts = capabilities.supportedLayouts(options: options)
-        configuration.layout = layouts.contains(.dedicated) ? .dedicated : .shared
+        configuration.layout =
+            layouts.contains(.layered) ? .layered
+            : layouts.contains(.dedicated) ? .dedicated
+            : .shared
+
+        // Neither known platform reaches this: an Apple Vision Pro offers
+        // [dedicated, layered] and the Simulator offers layered once the
+        // progressive option is asked for. It is logged rather than handled
+        // because there is no handling available from here — the immersion
+        // style is chosen by a scene modifier, not by this method, and a layer
+        // that supports the progressive style aborts the process at present
+        // time on any drawable it cannot give a render context to. A platform
+        // that lands here needs the scene put back to `.full`, and this is the
+        // line that says so.
+        if !layouts.contains(.layered) {
+            log.error(
+                """
+                no layered layout is offered for progressive immersion; \
+                a drawable with more than one view cannot be presented under \
+                the progressive style and Compositor Services will abort
+                """)
+        }
 
         // Depth is not optional on visionOS: the compositor reprojects each
         // presented frame against it to hold the image still as the wearer
         // moves.
         configuration.depthFormat = .depth32Float
-        if capabilities.supportedColorFormats(options: []).contains(.bgra8Unorm_srgb) {
+        let colorFormats =
+            capabilities.supportedColorFormats(options: [.progressiveImmersionEnabled])
+        if colorFormats.contains(.bgra8Unorm_srgb) {
             configuration.colorFormat = .bgra8Unorm_srgb
+        }
+
+        // Where the portal's shape arrives. The render context cuts the mask
+        // for the current immersion amount into this attachment, and the
+        // renderer then tests against it so nothing outside the portal is
+        // shaded — which is what progressive immersion saves.
+        //
+        // An optimisation and not the portal itself, which matters because the
+        // Vision Pro Simulator offers no stencil format at all. The portal is
+        // still drawn there, through a render context that is mandatory once
+        // the layer supports the progressive style; only the saving is lost.
+        // See SpaghettiPadCompositor.mm's EncodeViews.
+        let stencilFormats = capabilities.drawableRenderContextSupportedStencilFormats
+        var stencilFormat = MTLPixelFormat.invalid
+        if stencilFormats.contains(.stencil8) {
+            stencilFormat = .stencil8
+            configuration.drawableRenderContextStencilFormat = stencilFormat
+            // No multisampling anywhere in this renderer, so the mask is drawn
+            // at one sample per pixel like everything else.
+            configuration.drawableRenderContextRasterSampleCount = 1
         }
 
         // What was on offer, not only what was taken: the Simulator and a real
         // headset differ here, and a build that quietly settled for less should
         // say so in its own log rather than leave it to be inferred.
         let offered = layouts.map { String($0.rawValue) }.joined(separator: ", ")
+        let stencilsOffered = stencilFormats.isEmpty
+            ? "none"
+            : stencilFormats.map { String($0.rawValue) }.joined(separator: ", ")
         // Copied out first: os.Logger interpolation is an autoclosure, and an
         // autoclosure cannot capture an inout parameter.
         let chosen = configuration.layout.rawValue
+        let stencil = stencilFormat.rawValue
         log.info(
             """
             compositor capabilities: foveation \(foveation ? "supported" : "unsupported", privacy: .public), \
             layouts offered [\(offered, privacy: .public)], \
-            chose layout \(chosen, privacy: .public)
+            chose layout \(chosen, privacy: .public), \
+            portal stencil formats offered [\(stencilsOffered, privacy: .public)], \
+            chose \(stencil, privacy: .public)
             """)
     }
 }
@@ -144,6 +210,8 @@ private struct LaunchView: View {
     @State private var importingRom = false
     @State private var importingPack = false
     @State private var importInProgress: String?
+    @State private var extracting = false
+    @State private var extractionElapsed = 0
     @State private var installedPacks = 0
     @State private var enhancedTextures = SpaghettiPad_AlternateAssetsPreference() != 0
     @State private var stereoRequested = SpaghettiPad_RenderStereoRequested() != 0
@@ -154,6 +222,50 @@ private struct LaunchView: View {
             return "Close Immersive Space"
         }
         return status.hasGameArchive ? "Play" : "Show Test Pattern"
+    }
+
+    /// Turns an imported ROM into the engine's game archive.
+    ///
+    /// There is nothing to call: extraction is not a function the shell can
+    /// invoke, it is something `GameEngine::Create()` does on its way to the
+    /// game loop when it finds no archive. So this starts the engine and waits,
+    /// and the archive appearing on disk is the definition of done. The engine
+    /// keeps running afterwards, which is exactly what pressing Play would have
+    /// done anyway.
+    ///
+    /// Deliberately not folded into opening the immersive space: extraction
+    /// takes minutes, and minutes of test pattern inside a headset is not a way
+    /// to tell someone their ROM is being converted.
+    private func extractGameData() async {
+        extracting = true
+        extractionElapsed = 0
+        defer { extracting = false }
+
+        let started = await Task.detached(priority: .userInitiated) {
+            SpaghettiPad_StartEngine() != 0
+        }.value
+        guard started else {
+            log.error("the engine refused to start for extraction; see the shell log")
+            status = RuntimeStatus.prepare()
+            return
+        }
+
+        // Polled, because Torch reports progress to the engine's log and the
+        // engine has no callback to offer. The second condition is the failure
+        // case: every extraction failure ends in _Exit(1), which takes this
+        // process with it — but if the engine thread ever exits without one,
+        // this stops waiting for an archive that is not coming.
+        while SpaghettiPad_GameArchiveReady() == 0, SpaghettiPad_EngineRunning() != 0 {
+            try? await Task.sleep(for: .seconds(1))
+            extractionElapsed += 1
+        }
+
+        status = RuntimeStatus.prepare()
+        log.info(
+            """
+            extraction finished after \(extractionElapsed, privacy: .public)s: \
+            archive \(status.hasGameArchive ? "created" : "MISSING", privacy: .public)
+            """)
     }
 
     private func toggleImmersiveSpace(hideWindow: Bool = true) async {
@@ -200,20 +312,52 @@ private struct LaunchView: View {
             Text("SpaghettiPad")
                 .font(.extraLargeTitle2)
 
-            if status.ready {
-                Label(
-                    status.hasGameArchive
-                        ? "Game data found."
-                        : "No game data yet. Copy a Mario Kart 64 (US) ROM into "
-                            + "the app's Documents folder.",
-                    systemImage: status.hasGameArchive
-                        ? "checkmark.circle" : "questionmark.folder"
-                )
-            } else {
+            if !status.ready {
                 Label(
                     "The engine could not prepare its storage.",
                     systemImage: "exclamationmark.triangle"
                 )
+            } else if status.hasGameArchive {
+                Label("Game data found.", systemImage: "checkmark.circle")
+            } else if status.extractionPending {
+                Label(
+                    status.extractionFailed
+                        ? "A ROM is here, but the last extraction did not finish. "
+                            + "If it fails again the ROM is probably not a "
+                            + "supported Mario Kart 64 (US) dump — see logs/ in "
+                            + "this folder."
+                        : "A ROM is here and has not been converted yet.",
+                    systemImage: status.extractionFailed
+                        ? "exclamationmark.triangle" : "shippingbox"
+                )
+            } else {
+                Label(
+                    "No game data yet. Import a Mario Kart 64 (US) ROM below, or "
+                        + "copy one into this folder with Files.",
+                    systemImage: "questionmark.folder"
+                )
+            }
+
+            // Extraction comes before anything else can be offered, because
+            // until it has run there is no game to play and the immersive space
+            // has only a test pattern to show.
+            if status.extractionPending {
+                Button(extracting ? "Converting…" : "Convert ROM to Game Data") {
+                    Task { await extractGameData() }
+                }
+                .disabled(extracting || importInProgress != nil)
+
+                Text(
+                    extracting
+                        ? "Torch is converting the ROM — \(extractionElapsed)s so far. "
+                            + "This takes minutes and only happens once. Leave the "
+                            + "app in front of you until it finishes."
+                        : "Converts the ROM into the archive the engine reads. "
+                            + "Runs once, takes minutes, and needs about a "
+                            + "gigabyte of free space."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             // The immersive space is offered with or without game data: with it,
@@ -224,6 +368,7 @@ private struct LaunchView: View {
             Button(buttonTitle) {
                 Task { await toggleImmersiveSpace() }
             }
+            .disabled(extracting)
 
             Text(
                 immersiveSpaceOpen
@@ -374,6 +519,15 @@ private struct LaunchView: View {
             // here is the only way a scripted run can reach it. Compiled out of
             // every device build, and inert unless the variable is set.
             #if targetEnvironment(simulator)
+            // Same reasoning for extraction, which is the one step that has to
+            // happen before any of the above is meaningful on a fresh
+            // container. A scripted run imports a ROM, sets this, and waits for
+            // the archive.
+            if ProcessInfo.processInfo.environment["SPAGHETTIPAD_AUTO_EXTRACT"] == "1",
+                status.extractionPending, !extracting {
+                await extractGameData()
+            }
+
             let hook = ProcessInfo.processInfo
                 .environment["SPAGHETTIPAD_AUTO_OPEN_IMMERSIVE_SPACE"]
             if hook == "1" || hook == "cycle", !immersiveSpaceOpen {
@@ -406,20 +560,124 @@ private struct LaunchView: View {
     }
 }
 
+/// Whether the engine wants its settings menu on screen.
+///
+/// The pad's menu button reaches ImGui, not SwiftUI, so this is the only path
+/// between them: the engine posts a visibility edge from its own thread, the
+/// shell forwards it to the main queue, and this turns it into something a scene
+/// can watch. Going the other way — a wearer closing the window with its own
+/// close button — is SettingsWindow's job, through
+/// `SpaghettiPad_MenuRequestVisible`.
+///
+/// Owned by the App rather than by a view because the launch window is dismissed
+/// the moment the immersive space opens, and settings are wanted long after
+/// that. An observer living on a view that no longer exists would work exactly
+/// once, at the only time nobody needs it.
+@MainActor
+@Observable
+final class MenuVisibility {
+    private(set) var visible = false
+
+    // nonisolated because deinit is, and a token that is only ever assigned once
+    // and read once has nothing to race. The alternative is no deinit at all —
+    // this object does live for the whole process — but an observer that is
+    // registered and never removed is the kind of thing that is true until it
+    // suddenly is not.
+    nonisolated(unsafe) private var observer: (any NSObjectProtocol)?
+
+    init() {
+        observer = NotificationCenter.default.addObserver(
+            forName: Notification.Name(SPAGHETTIPAD_MENU_VISIBILITY_NOTIFICATION),
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let wanted = (note.userInfo?["visible"] as? NSNumber)?.boolValue ?? false
+            MainActor.assumeIsolated { self?.visible = wanted }
+        }
+    }
+
+    deinit {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+}
+
 @main
 struct SpaghettiPadApp: App {
     static let launchWindowID = "SpaghettiPadLaunchWindow"
     static let immersiveSpaceID = "SpaghettiPadImmersiveSpace"
+    static let settingsWindowID = "SpaghettiPadSettingsWindow"
+
+    /// How far the Digital Crown can wind the world open.
+    ///
+    /// The floor is not zero. At the bottom of the dial the portal is a small
+    /// window and everything around it is the wearer's own room, which for a
+    /// racing game is a picture too small to steer by; a third of the way up is
+    /// about where the track still reads. The ceiling is 1.0 — the top of the
+    /// dial is the fully immersive space this app was until now, so nothing is
+    /// taken away from someone who never touches the Crown.
+    static let immersionRange = 0.35...1.0
+
+    /// The style the space opens under, and the one thing about progressive
+    /// immersion that is not the same on both platforms.
+    ///
+    /// **The Vision Pro Simulator cannot run it.** Not "renders it differently"
+    /// — the first frame of a progressive-style space fails on its GPU with
+    /// `MTLCommandBufferErrorDomain error 1`, takes the simulator's Metal
+    /// service down with it, and every Metal call in the process aborts through
+    /// XPC afterwards. That was isolated rather than assumed: the identical
+    /// build under `.full`, with the same layered layout, the same
+    /// `render_target_array_index` in every vertex program and the same
+    /// drawable render context in the loop, presented 1801 frames at 60 Hz with
+    /// no command buffer failures at all. The only difference between the run
+    /// that dies on frame 1 and the run that does not is this value.
+    ///
+    /// Consistent with what the Simulator reports of itself: it offers no
+    /// render-context stencil format, so the portal cannot be masked there, and
+    /// CompositorServices' own headers say of this API that it "is not
+    /// available on simulator".
+    ///
+    /// So the Simulator lane keeps the fully immersive space it has always had
+    /// — every Simulator result in docs/remaining-work.md was collected under
+    /// it — and the Digital Crown is a device claim, like stereo, world-locking
+    /// and comfort before it.
+    static var initialImmersionStyle: ImmersionStyle {
+        #if targetEnvironment(simulator)
+        return .full
+        #else
+        return .progressive(immersionRange, initialAmount: 1.0)
+        #endif
+    }
+
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var status = RuntimeStatus.prepare()
     @State private var immersiveSpaceOpen = false
-    @State private var immersionStyle: ImmersionStyle = .full
+    /// Progressive rather than full on a headset, which is the whole of what
+    /// makes the Digital Crown mean anything here: under `.full` the system has
+    /// no immersion amount to dial and the Crown only closes the space. Opened
+    /// at the top of the range so a wearer who wants what they had before gets
+    /// it without doing anything.
+    @State private var immersionStyle: ImmersionStyle =
+        SpaghettiPadApp.initialImmersionStyle
+    @State private var menuVisibility = MenuVisibility()
 
     var body: some Scene {
         WindowGroup(id: Self.launchWindowID) {
             LaunchView(status: status, immersiveSpaceOpen: $immersiveSpaceOpen)
         }
         .defaultSize(width: 620, height: 400)
+
+        // The settings menu, native. Its own scene rather than a sheet on the
+        // launch window, because the launch window is dismissed the moment the
+        // immersive space opens and settings are wanted mid-race.
+        WindowGroup(id: Self.settingsWindowID) {
+            SettingsWindow()
+        }
+        .defaultSize(width: 900, height: 640)
+        .windowResizability(.contentMinSize)
 
         ImmersiveSpace(id: Self.immersiveSpaceID) {
             CompositorLayer(configuration: SpaghettiPadLayerConfiguration()) {
@@ -430,11 +688,37 @@ struct SpaghettiPadApp: App {
                 SpaghettiPad_StartCompositor(
                     Unmanaged.passUnretained(layerRenderer).toOpaque())
             }
+            // Nothing in the renderer needs this number — the portal's shape
+            // arrives on the drawable's own stencil, frame by frame, and no
+            // matrix here is derived from the amount. It is recorded because a
+            // wearer reporting that something looked wrong is reporting it at
+            // some particular immersion, and a log that cannot say which one
+            // cannot tell a portal-edge artefact from a rendering fault.
+            .onImmersionChange { _, immersion in
+                SpaghettiPad_SetImmersionAmount(immersion.amount ?? -1.0)
+            }
         }
-        .immersionStyle(selection: $immersionStyle, in: .full)
+        // The same value the selection starts at, rather than a second spelling
+        // of it. A style's range and initial amount are part of its identity, so
+        // a `.progressive` listed here that did not match the one selected would
+        // not be the style that gets applied — and on the Simulator, where the
+        // first is already `.full`, this list must not offer progressive at all.
+        // A layer that merely *supports* the progressive style is a layer whose
+        // frames the Simulator cannot present.
+        .immersionStyle(selection: $immersionStyle, in: Self.initialImmersionStyle, .full)
         .onChange(of: immersiveSpaceOpen) { _, open in
             if !open {
                 SpaghettiPad_StopCompositor()
+            }
+        }
+        // On the immersive space rather than on the launch window: this is the
+        // scene that is alive while someone is racing, which is when the menu
+        // button gets pressed.
+        .onChange(of: menuVisibility.visible) { _, visible in
+            if visible {
+                openWindow(id: Self.settingsWindowID)
+            } else {
+                dismissWindow(id: Self.settingsWindowID)
             }
         }
     }

@@ -37,8 +37,11 @@
 #import <Metal/Metal.h>
 
 #import <os/log.h>
+#import <os/proc.h>
 #import <simd/simd.h>
 
+#import <mach/mach.h>
+#import <mach/task_info.h>
 #import <pthread.h>
 
 #import <atomic>
@@ -84,6 +87,30 @@ constexpr float kReticleDistanceMetres = 0.6f;
 // loop from one stalled frame left on screen.
 constexpr uint64_t kSweepPeriodFrames = 180;
 
+// Which slice of the drawable a draw lands on, bound at this index by every
+// program below.
+//
+// Under the layered layout both eyes share one texture array and one
+// rasterization rate map, and both are indexed by the `render_target_array_index`
+// a vertex shader emits. A renderer that emits nothing writes eye 1 through
+// eye 0's foveation — which an Apple Vision Pro showed as a clean grid in the
+// left eye and a warped one in the right, and which no Simulator can reproduce
+// because a Simulator renders one view. So every vertex program takes its
+// view's index and every one of them says it.
+//
+// Free in all five programs: the highest index any of them binds for its own
+// data is 2.
+constexpr NSUInteger kViewLayerBufferIndex = 3;
+
+// What the compositor writes into the stencil wherever this frame will actually
+// be seen — inside the portal the Digital Crown has dialled — and what every
+// draw is then tested against, so nothing outside it is shaded.
+//
+// Any value would do; nothing else in this renderer touches the stencil. It is
+// not 1 so that a stencil left at some default by a path that forgot to draw
+// the mask fails the test visibly rather than passing by coincidence.
+constexpr uint8_t kPortalStencilValue = 200;
+
 const char* const kPatternShaderSource = R"METAL(
 #include <metal_stdlib>
 using namespace metal;
@@ -97,12 +124,14 @@ struct PatternRect {
 struct Varyings {
     float4 position [[position]];
     float4 color;
+    uint layer [[render_target_array_index]];
 };
 
 vertex Varyings pattern_vertex(uint vertex_id [[vertex_id]],
                                uint instance_id [[instance_id]],
                                constant PatternRect* rects [[buffer(0)]],
-                               constant float& depth [[buffer(1)]]) {
+                               constant float& depth [[buffer(1)]],
+                               constant uint& view_layer [[buffer(3)]]) {
     const float2 corners[6] = {
         float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0,  1.0),
         float2( 1.0, -1.0), float2(1.0,  1.0), float2(-1.0,  1.0)
@@ -114,6 +143,7 @@ vertex Varyings pattern_vertex(uint vertex_id [[vertex_id]],
     // Normalised view space is y-down; clip space is y-up.
     out.position = float4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, depth, 1.0);
     out.color = rect.color;
+    out.layer = view_layer;
     return out;
 }
 
@@ -314,11 +344,13 @@ using namespace metal;
 struct ScreenVaryings {
     float4 position [[position]];
     float2 uv;
+    uint layer [[render_target_array_index]];
 };
 
 vertex ScreenVaryings screen_vertex(uint vertex_id [[vertex_id]],
                                     constant float4x4& model_view_projection [[buffer(0)]],
-                                    constant float2& half_extent [[buffer(1)]]) {
+                                    constant float2& half_extent [[buffer(1)]],
+                                    constant uint& view_layer [[buffer(3)]]) {
     const float2 corners[6] = {
         float2(-1.0,  1.0), float2( 1.0,  1.0), float2(-1.0, -1.0),
         float2( 1.0,  1.0), float2( 1.0, -1.0), float2(-1.0, -1.0)
@@ -332,6 +364,7 @@ vertex ScreenVaryings screen_vertex(uint vertex_id [[vertex_id]],
     out.position = model_view_projection * local;
     // Metal texture space is y-down, so the top of the screen is v = 0.
     out.uv = float2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+    out.layer = view_layer;
     return out;
 }
 
@@ -367,10 +400,12 @@ using namespace metal;
 struct EyeVaryings {
     float4 position [[position]];
     float2 uv;
+    uint layer [[render_target_array_index]];
 };
 
 vertex EyeVaryings eye_vertex(uint vertex_id [[vertex_id]],
-                              constant float& depth [[buffer(0)]]) {
+                              constant float& depth [[buffer(0)]],
+                              constant uint& view_layer [[buffer(3)]]) {
     const float2 corners[6] = {
         float2(-1.0,  1.0), float2( 1.0,  1.0), float2(-1.0, -1.0),
         float2( 1.0,  1.0), float2( 1.0, -1.0), float2(-1.0, -1.0)
@@ -392,6 +427,7 @@ vertex EyeVaryings eye_vertex(uint vertex_id [[vertex_id]],
     out.position = float4(corner, depth, 1.0);
     // Metal texture space is y-down, so the top of the image is v = 0.
     out.uv = float2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+    out.layer = view_layer;
     return out;
 }
 
@@ -461,6 +497,59 @@ simd_float4x4 PlaceRecentre(simd_float4x4 originFromDevice) {
     return worldFromRecentre;
 }
 
+// ------------------------------------------------------- when the room is placed
+//
+// Everything above answers "where"; these answer "from which pose", which turned
+// out to be the harder half. The room was placed from the first fully tracked
+// pose that arrived — that is, from wherever the head happened to be pointing in
+// the instant the immersive space finished opening — and a wearer measured what
+// that costs: the Mode B HUD panel sat with its top-right corner at their visual
+// centre. The panel was exactly where it had been told to go. Half the panel is
+// 21.8 degrees wide and 16.7 degrees tall, so a head that settled about that far
+// right of, and above, the placement pose puts the corner precisely there, and
+// the wearer confirmed the panel stays put in the room while they turn. Nothing
+// about the projection was wrong; the pose it was anchored to was.
+//
+// So the room now waits for the head to be still before it commits. Only yaw and
+// position are watched, because those are the only two things the placement
+// reads: PlaceScreen and PlaceRecentre both drop pitch and roll, so a wearer who
+// settles while looking down at a pair of controllers still gets a level room
+// facing the way they are facing.
+constexpr double kRoomSettleSeconds = 0.5;
+
+// Placed anyway after this long. A wearer who is still moving four seconds in is
+// walking about, and a room placed from a moving head beats no room at all:
+// Mode B publishes no views until one exists, so this bound is also the bound on
+// how long the game can be denied stereo.
+constexpr double kRoomSettleTimeoutSeconds = 4.0;
+
+// What counts as still. Three centimetres is above a seated wearer's sway and
+// well below a deliberate lean; three degrees is likewise above the tremor in a
+// held pose and far below a glance.
+constexpr float kRoomSettleMetres = 0.03f;
+constexpr float kRoomSettleRadians = 3.0f * (float)M_PI / 180.0f;
+
+// How long the recentre chord must be held. Long enough that no combination of
+// buttons snatched mid-race can reach it by accident, short enough to be a
+// gesture rather than a wait.
+constexpr double kRecentreHoldSeconds = 1.0;
+
+// How often the chord is sampled, in frames. A one-second hold does not need
+// ninety samples a second, and this is a thread with a headset's deadline over
+// it: fifteen a second is ample and costs an Objective-C round trip at that rate
+// rather than at the frame rate.
+constexpr uint64_t kRecentrePollFrames = 6;
+
+// The angle between two horizontal directions, in radians. Both are unit-length
+// by construction, and the clamp is for the arithmetic rather than the geometry:
+// a dot product of a vector with itself lands a hair outside [-1, 1] often
+// enough that acos would return NaN and stall the settle forever.
+float AngleBetween(simd_float3 a, simd_float3 b) {
+    float cosine = simd_dot(a, b);
+    cosine = cosine < -1.0f ? -1.0f : (cosine > 1.0f ? 1.0f : cosine);
+    return std::acos(cosine);
+}
+
 // -------------------------------------------------------------- environment
 
 // A fully immersive space replaces the room the wearer is standing in. Leaving
@@ -510,11 +599,13 @@ using namespace metal;
 struct SkyVaryings {
     float4 position [[position]];
     float3 direction;
+    uint layer [[render_target_array_index]];
 };
 
 struct FloorVaryings {
     float4 position [[position]];
     float2 ground;  // metres from the room's centre, on the floor plane
+    uint layer [[render_target_array_index]];
 };
 
 // A large box around the wearer, drawn as ordinary world geometry.
@@ -534,7 +625,8 @@ struct FloorVaryings {
 vertex SkyVaryings sky_vertex(uint vertex_id [[vertex_id]],
                               constant float4x4& clip_from_world [[buffer(0)]],
                               constant float3& centre [[buffer(1)]],
-                              constant float& radius [[buffer(2)]]) {
+                              constant float& radius [[buffer(2)]],
+                              constant uint& view_layer [[buffer(3)]]) {
     // Two triangles per face, six faces, in the unit cube around the origin.
     const float3 corners[36] = {
         float3(-1,-1,-1), float3( 1,-1,-1), float3( 1, 1,-1),
@@ -555,6 +647,7 @@ vertex SkyVaryings sky_vertex(uint vertex_id [[vertex_id]],
     SkyVaryings out;
     out.position = clip_from_world * float4(world, 1.0);
     out.direction = world - centre;
+    out.layer = view_layer;
     return out;
 }
 
@@ -584,7 +677,8 @@ fragment float4 sky_fragment(SkyVaryings in [[stage_in]]) {
 vertex FloorVaryings floor_vertex(uint vertex_id [[vertex_id]],
                                   constant float4x4& clip_from_world [[buffer(0)]],
                                   constant float3& centre [[buffer(1)]],
-                                  constant float& half_extent [[buffer(2)]]) {
+                                  constant float& half_extent [[buffer(2)]],
+                                  constant uint& view_layer [[buffer(3)]]) {
     const float2 corners[6] = {
         float2(-1.0, -1.0), float2( 1.0, -1.0), float2(-1.0,  1.0),
         float2( 1.0, -1.0), float2( 1.0,  1.0), float2(-1.0,  1.0)
@@ -595,6 +689,7 @@ vertex FloorVaryings floor_vertex(uint vertex_id [[vertex_id]],
     FloorVaryings out;
     out.position = clip_from_world * world;
     out.ground = corner;
+    out.layer = view_layer;
     return out;
 }
 
@@ -647,6 +742,13 @@ private:
                      id<MTLTexture> engineFrame,
                      id<MTLTexture> const stereoFrames[SPAGHETTIPAD_EYE_COUNT],
                      const DevicePose& pose);
+    void EncodeViewContent(id<MTLRenderCommandEncoder> encoder,
+                           cp_drawable_t drawable, size_t viewIndex,
+                           uint32_t layer, const MTLViewport& viewport,
+                           id<MTLTexture> engineFrame,
+                           id<MTLTexture> const stereoFrames[SPAGHETTIPAD_EYE_COUNT],
+                           const DevicePose& pose);
+    id<MTLTexture> PortalStencil(id<MTLTexture> colorTexture, size_t slices);
     void EncodeEnvironment(id<MTLRenderCommandEncoder> encoder,
                            simd_float4x4 viewProjection);
     void EncodeScreen(id<MTLRenderCommandEncoder> encoder,
@@ -657,6 +759,9 @@ private:
     void EncodeEye(id<MTLRenderCommandEncoder> encoder, cp_drawable_t drawable,
                    size_t viewIndex, id<MTLTexture> eyeFrame);
     void PublishViews(cp_drawable_t drawable, const DevicePose& pose);
+    void PlaceRoom(simd_float4x4 originFromDevice, const char* why);
+    bool RoomPoseSettled(simd_float4x4 originFromDevice);
+    void PollRecentreChord();
     void LogTopology(cp_drawable_t drawable);
     void LogStereo(cp_drawable_t drawable, const DevicePose& pose);
 
@@ -680,6 +785,32 @@ private:
     // as a void while the depth-writing floor grid beside it stayed visible.
     id<MTLDepthStencilState> eyeDepthState_ = nil;
 
+    // ------------------------------------------------------------- the portal
+    //
+    // Under progressive immersion the wearer dials how much of the world this
+    // app replaces, and what is left is their own room. The boundary between
+    // the two is not this file's to compute: the compositor draws the current
+    // shape into a stencil attachment through a render context, and everything
+    // below is tested against it.
+    //
+    // Read once, at pipeline build, because a pipeline's stencil format has to
+    // agree with the pass it is used in and neither can change afterwards.
+    cp_layer_renderer_layout layout_ = cp_layer_renderer_layout_dedicated;
+    MTLPixelFormat portalStencilFormat_ = MTLPixelFormatInvalid;
+
+    // Ours, not the drawable's — Compositor Services asks for a stencil format
+    // and hands back no texture in it. Memoryless and cached across frames: it
+    // is written and read inside one render pass and never afterwards, so it
+    // costs a tile allocation and no memory bandwidth at all.
+    id<MTLTexture> portalStencil_ = nil;
+    NSUInteger portalStencilWidth_ = 0;
+    NSUInteger portalStencilHeight_ = 0;
+    NSUInteger portalStencilSlices_ = 0;
+
+    bool loggedPortal_ = false;
+    bool loggedPortalRefused_ = false;
+    uint64_t portalFrames_ = 0;
+
     std::thread thread_;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> finished_{false};
@@ -691,9 +822,9 @@ private:
     uint64_t anchoredDrawables_ = 0;
     uint64_t unanchoredDrawables_ = 0;
 
-    // Where the room is. Fixed once the first tracked pose arrives, and left
-    // alone afterwards: a screen that re-placed itself would be following the
-    // wearer again, slowly.
+    // Where the room is. Fixed once the wearer's head has settled, and left alone
+    // afterwards unless they ask for it again: a screen that re-placed itself
+    // every frame would be following the wearer, slowly.
     simd_float4x4 worldFromScreen_ = matrix_identity_float4x4;
     // Where the game's camera is, for Mode B. Placed at the same moment and from
     // the same pose as the screen, so switching modes mid-session does not move
@@ -702,6 +833,24 @@ private:
     simd_float3 roomCentre_ =
         simd_make_float3(0.0f, -kNominalEyeHeightMetres, 0.0f);
     bool roomPlaced_ = false;
+
+    // The candidate pose the room is waiting on, and how long it has held. Reset
+    // to the current pose the moment the head moves past either threshold, so
+    // `settleSince_` measures stillness rather than elapsed time.
+    bool settling_ = false;
+    simd_float3 settleHead_ = simd_make_float3(0.0f, 0.0f, 0.0f);
+    simd_float3 settleForward_ = simd_make_float3(0.0f, 0.0f, -1.0f);
+    std::chrono::steady_clock::time_point settleStart_{};
+    std::chrono::steady_clock::time_point settleSince_{};
+
+    // The recentre chord's state, owned by the render thread. `recentreArmed_`
+    // is what makes one hold fire once: a chord still held after it has placed
+    // the room must be released before it can place it again, or a wearer
+    // holding it for two seconds recentres twice.
+    bool recentreHeld_ = false;
+    bool recentreArmed_ = true;
+    bool recentreRequested_ = false;
+    std::chrono::steady_clock::time_point recentreHeldSince_{};
 
     // The last pose any drawable was anchored to, kept for the periodic
     // measurement below rather than for rendering: every frame renders from the
@@ -774,6 +923,16 @@ bool Compositor::BuildPipeline() {
     cp_layer_renderer_configuration_t configuration =
         cp_layer_renderer_get_configuration(layerRenderer_);
 
+    // Both fixed for the life of the layer, and both decided in
+    // SpaghettiPadApp.swift's makeConfiguration. Read here rather than assumed
+    // because every pass and every pipeline below has to agree with them: a
+    // pipeline that declares a stencil format the pass has no attachment for is
+    // a validation failure, and so is the reverse.
+    layout_ = cp_layer_renderer_configuration_get_layout(configuration);
+    portalStencilFormat_ =
+        cp_layer_renderer_configuration_get_drawable_render_context_stencil_format(
+            configuration);
+
     // Compiled from source rather than a metallib: these are a handful of
     // trivial functions, and this keeps the visionOS lane free of a Metal build
     // rule that CMake's Xcode generator would have to be taught.
@@ -800,6 +959,14 @@ bool Compositor::BuildPipeline() {
             cp_layer_renderer_configuration_get_color_format(configuration);
         descriptor.depthAttachmentPixelFormat =
             cp_layer_renderer_configuration_get_depth_format(configuration);
+        // MTLPixelFormatInvalid when the layer offered no render context, which
+        // is also "this pipeline has no stencil attachment" — the same thing
+        // said twice, which is why one value carries both.
+        descriptor.stencilAttachmentPixelFormat = portalStencilFormat_;
+        // Required of any pipeline whose vertex function emits a
+        // render_target_array_index, which every one of these now does. All of
+        // them draw triangles and nothing else.
+        descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
         if (blend) {
             // Premultiplied: the floor's fragment shader already scales its
             // colour by the coverage it reports, so the grid lines fade out
@@ -847,6 +1014,30 @@ bool Compositor::BuildPipeline() {
     sampler.tAddressMode = MTLSamplerAddressModeClampToEdge;
     screenSampler_ = [device_ newSamplerStateWithDescriptor:sampler];
 
+    // The portal test, applied to every draw in the frame.
+    //
+    // Equal rather than a range, because the mask is not a depth: the render
+    // context writes one value inside the portal and leaves everything outside
+    // it at whatever the pass cleared to. Nothing here ever writes the stencil,
+    // hence a write mask of zero — the only thing that puts a value in it is
+    // the compositor's own mask draw.
+    //
+    // Left off entirely when the layer offered no stencil format, because a
+    // stencil test against an attachment that does not exist is a validation
+    // error rather than a test that passes. That is not the same as having no
+    // portal: the portal is still drawn, just not cut into a stencil first.
+    const bool hasStencil = portalStencilFormat_ != MTLPixelFormatInvalid;
+    auto portalStencilDescriptor = [&]() -> MTLStencilDescriptor* {
+        MTLStencilDescriptor* stencil = [[MTLStencilDescriptor alloc] init];
+        stencil.stencilCompareFunction = MTLCompareFunctionEqual;
+        stencil.stencilFailureOperation = MTLStencilOperationKeep;
+        stencil.depthFailureOperation = MTLStencilOperationKeep;
+        stencil.depthStencilPassOperation = MTLStencilOperationKeep;
+        stencil.readMask = 0xFF;
+        stencil.writeMask = 0x00;
+        return stencil;
+    };
+
     // visionOS is reverse-Z: 1 is the near plane, 0 the far one, which is why
     // the pass below clears depth to 0 rather than 1.
     //
@@ -858,6 +1049,10 @@ bool Compositor::BuildPipeline() {
     MTLDepthStencilDescriptor* depth = [[MTLDepthStencilDescriptor alloc] init];
     depth.depthCompareFunction = MTLCompareFunctionGreaterEqual;
     depth.depthWriteEnabled = YES;
+    if (hasStencil) {
+        depth.frontFaceStencil = portalStencilDescriptor();
+        depth.backFaceStencil = portalStencilDescriptor();
+    }
     depthState_ = [device_ newDepthStencilStateWithDescriptor:depth];
 
     MTLDepthStencilDescriptor* eyeDepth = [[MTLDepthStencilDescriptor alloc] init];
@@ -865,20 +1060,24 @@ bool Compositor::BuildPipeline() {
     // See the declaration: a depth that is not written is a depth left at the
     // far plane, and the compositor shows a far-plane pixel as black.
     eyeDepth.depthWriteEnabled = YES;
+    if (hasStencil) {
+        eyeDepth.frontFaceStencil = portalStencilDescriptor();
+        eyeDepth.backFaceStencil = portalStencilDescriptor();
+    }
     eyeDepthState_ = [device_ newDepthStencilStateWithDescriptor:eyeDepth];
 
     os_log(CompositorLog(),
            "compositor ready on %{public}@: layout %u, colour format %lu, "
-           "depth format %lu, foveation %{public}s",
-           device_.name,
-           (unsigned)cp_layer_renderer_configuration_get_layout(configuration),
+           "depth format %lu, foveation %{public}s, portal %{public}s",
+           device_.name, (unsigned)layout_,
            (unsigned long)cp_layer_renderer_configuration_get_color_format(
                configuration),
            (unsigned long)cp_layer_renderer_configuration_get_depth_format(
                configuration),
            cp_layer_renderer_configuration_get_foveation_enabled(configuration)
                ? "on"
-               : "off");
+               : "off",
+           hasStencil ? "stencil available" : "no stencil (portal drawn unmasked)");
     return true;
 }
 
@@ -899,11 +1098,21 @@ void Compositor::LogTopology(cp_drawable_t drawable) {
         cp_view_texture_map_t map = cp_view_get_view_texture_map(view);
         const MTLViewport viewport = cp_view_texture_map_get_viewport(map);
         const simd_float4x4 transform = cp_view_get_transform(view);
+        // The texture's own type and length, rather than what the layout
+        // implies about them. Under the layered layout a Simulator renders one
+        // view, so its array is one slice long — `type 3, 1 slice(s)` — while a
+        // headset's is one per eye, and the pass that draws into it is sized
+        // from these numbers rather than from the view count.
+        id<MTLTexture> viewColour = cp_drawable_get_color_texture(
+            drawable, cp_view_texture_map_get_texture_index(map));
         os_log(CompositorLog(),
-               "  view %zu: texture %zu slice %zu viewport %.0fx%.0f at "
-               "(%.0f,%.0f), eye offset (%.4f, %.4f, %.4f) m",
+               "  view %zu: texture %zu slice %zu (type %lu, %lu slice(s)) "
+               "viewport %.0fx%.0f at (%.0f,%.0f), eye offset "
+               "(%.4f, %.4f, %.4f) m",
                index, cp_view_texture_map_get_texture_index(map),
-               cp_view_texture_map_get_slice_index(map), viewport.width,
+               cp_view_texture_map_get_slice_index(map),
+               (unsigned long)viewColour.textureType,
+               (unsigned long)viewColour.arrayLength, viewport.width,
                viewport.height, viewport.originX, viewport.originY,
                transform.columns[3].x, transform.columns[3].y,
                transform.columns[3].z);
@@ -1169,14 +1378,26 @@ void Compositor::PublishViews(cp_drawable_t drawable, const DevicePose& pose) {
             // density: sixteen megapixels an eye, thirty-two a frame, against
             // Mode A's two, which is not a resolution a headset has ever asked
             // anyone for. What the engine wants is what the map compresses to.
+            //
+            // Which map, and which layer of it, both depend on the layout. Under
+            // the layered layout there is one map carrying a layer per eye —
+            // the same indexing the vertex programs emit — and under dedicated
+            // there is one single-layer map per eye. Asking map 0 layer 0 for
+            // both eyes happens to give the right answer on hardware whose eyes
+            // are the same size, which is every headset so far and not a thing
+            // to rely on.
             const size_t rateMapCount =
                 cp_drawable_get_rasterization_rate_map_count(drawable);
             if (rateMapCount > 0) {
+                const size_t mapIndex =
+                    index < rateMapCount ? index : rateMapCount - 1;
                 id<MTLRasterizationRateMap> rateMap =
-                    cp_drawable_get_rasterization_rate_map(
-                        drawable, index < rateMapCount ? index : rateMapCount - 1);
+                    cp_drawable_get_rasterization_rate_map(drawable, mapIndex);
                 if (rateMap != nil) {
-                    const MTLSize physical = [rateMap physicalSizeForLayer:0];
+                    const NSUInteger layers = rateMap.layerCount;
+                    const NSUInteger layer =
+                        index < layers ? (NSUInteger)index : 0;
+                    const MTLSize physical = [rateMap physicalSizeForLayer:layer];
                     if (physical.width > 0 && physical.height > 0) {
                         width = (uint32_t)physical.width;
                         height = (uint32_t)physical.height;
@@ -1236,39 +1457,378 @@ void Compositor::PublishViews(cp_drawable_t drawable, const DevicePose& pose) {
     }
 }
 
-// The per-view render passes. This is the part that has to be right for every
-// layout the compositor might hand back, and it is deliberately unchanged from
-// the phase that only had a test pattern to draw: what the engine added is one
-// branch inside the encoder, not a different frame.
+// The stencil the compositor draws the portal into.
+//
+// Allocated here because the layer configuration names a format and Compositor
+// Services then hands back no texture in it — unlike colour and depth, the
+// stencil is the app's to provide. Memoryless: it is written by the mask draw
+// and read by every draw after it within one render pass, and never looked at
+// again, so on a tile-based GPU it costs tile memory and no bandwidth at all.
+//
+// Kept across frames and rebuilt only when the drawable changes shape, which in
+// a session means once.
+id<MTLTexture> Compositor::PortalStencil(id<MTLTexture> colorTexture,
+                                         size_t slices) {
+    if (colorTexture == nil || portalStencilFormat_ == MTLPixelFormatInvalid) {
+        return nil;
+    }
+    const NSUInteger width = colorTexture.width;
+    const NSUInteger height = colorTexture.height;
+    const NSUInteger length = slices > 0 ? (NSUInteger)slices : 1;
+    if (portalStencil_ != nil && portalStencilWidth_ == width &&
+        portalStencilHeight_ == height && portalStencilSlices_ == length) {
+        return portalStencil_;
+    }
+
+    MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
+    descriptor.textureType =
+        length > 1 ? MTLTextureType2DArray : MTLTextureType2D;
+    descriptor.pixelFormat = portalStencilFormat_;
+    descriptor.width = width;
+    descriptor.height = height;
+    descriptor.arrayLength = length;
+    descriptor.usage = MTLTextureUsageRenderTarget;
+    descriptor.storageMode = MTLStorageModeMemoryless;
+
+    portalStencil_ = [device_ newTextureWithDescriptor:descriptor];
+    if (portalStencil_ == nil) {
+        os_log_error(CompositorLog(),
+                     "could not allocate a %lu x %lu x %lu portal stencil; the "
+                     "frame will be drawn without one",
+                     (unsigned long)width, (unsigned long)height,
+                     (unsigned long)length);
+        return nil;
+    }
+    portalStencil_.label = @"SpaghettiPad portal stencil";
+    portalStencilWidth_ = width;
+    portalStencilHeight_ = height;
+    portalStencilSlices_ = length;
+    return portalStencil_;
+}
+
+// One view's content, into an encoder already pointed at that view.
+//
+// Everything that differs between the eyes is set here rather than baked into
+// the pass, because under the layered layout there is only one pass: the
+// viewport, the slice the draws land on, and the matrices they are put through.
+void Compositor::EncodeViewContent(
+    id<MTLRenderCommandEncoder> encoder, cp_drawable_t drawable, size_t viewIndex,
+    uint32_t layer, const MTLViewport& viewport, id<MTLTexture> engineFrame,
+    id<MTLTexture> const stereoFrames[SPAGHETTIPAD_EYE_COUNT],
+    const DevicePose& pose) {
+    cp_view_t view = cp_drawable_get_view(drawable, viewIndex);
+
+    [encoder setViewport:viewport];
+    [encoder setDepthStencilState:depthState_];
+
+    // Which slice of the drawable — and, under a layered layout, which layer of
+    // the one rasterization rate map — every draw below lands on. Bound once
+    // per view for all five programs, because all five read it from the same
+    // index and none of them draws across two eyes.
+    //
+    // Passed in rather than derived from the view index, because it is a fact
+    // about the pass and not about the eye: a pass whose attachment is a single
+    // slice has one layer, and naming any other is a draw that does not land.
+    [encoder setVertexBytes:&layer length:sizeof(layer) atIndex:kViewLayerBufferIndex];
+
+    const simd_float4x4 viewProjection =
+        ViewProjection(drawable, view, viewIndex, pose.originFromDevice);
+    id<MTLTexture> eyeFrame =
+        viewIndex < SPAGHETTIPAD_EYE_COUNT ? stereoFrames[viewIndex] : nil;
+
+    if (eyeFrame != nil) {
+        // Mode B. No room, and no screen to hang anything on: the engine has
+        // drawn this eye's whole view, sky and ground included, because in
+        // this mode the game's own world is the environment. Anything drawn
+        // around it here would be a second world competing with the first.
+        ++eyeEncodes_;
+        EncodeEye(encoder, drawable, viewIndex, eyeFrame);
+    } else if (engineFrame != nil) {
+        // The room, then the screen in it. The test pattern gets neither: it
+        // is a full-view overlay measured in the view's own coordinates, and
+        // putting a room behind it would change the picture the Phase 2
+        // evidence was captured from.
+        ++screenEncodes_;
+        EncodeEnvironment(encoder, viewProjection);
+        EncodeScreen(encoder, viewProjection, engineFrame);
+    } else {
+        ++patternEncodes_;
+        EncodePattern(encoder, viewProjection, pose.originFromDevice, viewIndex,
+                      viewport);
+    }
+}
+
+// The render passes, and the portal drawn around them.
+//
+// Two shapes, and which one is taken is settled by the layout the layer was
+// configured with rather than decided here. Layered puts every view in one pass
+// over one texture array, each view selected by the render_target_array_index
+// its draws emit; that is the only shape progressive immersion's render context
+// accepts on a drawable with two views, and it is the shape a real headset
+// takes. The per-view passes below it are what the Simulator and any
+// dedicated/shared fallback get.
 void Compositor::EncodeViews(cp_drawable_t drawable,
                              id<MTLCommandBuffer> commandBuffer,
                              id<MTLTexture> engineFrame,
                              id<MTLTexture> const stereoFrames[SPAGHETTIPAD_EYE_COUNT],
                              const DevicePose& pose) {
     const size_t viewCount = cp_drawable_get_view_count(drawable);
+    if (viewCount == 0) {
+        return;
+    }
     const size_t rateMapCount =
         cp_drawable_get_rasterization_rate_map_count(drawable);
+    const bool layered = layout_ == cp_layer_renderer_layout_layered;
 
-    // Under the shared layout every view lands in one texture, so only the
-    // first pass over a given slice may clear it. Under dedicated and layered
-    // layouts each view has its own destination and every pass clears.
-    std::vector<uint64_t> cleared;
+    // Whether this drawable is presented through a render context.
+    //
+    // Not a preference. Once the layer supports the progressive style — which
+    // it does whenever this condition holds, and which it logs as `layer
+    // supports progressive style 1` — presenting a drawable without one aborts
+    // the process from inside Compositor Services:
+    //
+    //     BUG IN CLIENT: cannot present drawable: need to use drawable render
+    //     context when supporting progressive style.
+    //
+    // That is the whole of why this is separated from the mask below. The first
+    // version of this code treated the render context as the thing that draws
+    // the mask, gated both on a stencil format, and died on the Simulator's
+    // second frame because the Simulator offers no stencil format and the
+    // render context is required there anyway.
+    //
+    // The condition is the layer's own: layered layout, or a platform that
+    // renders a single view, which is what a render context accepts.
+    const bool portal = layered || viewCount == 1;
 
-    // Fewer rate maps than views means the maps are layers of one map, selected
-    // by a render_target_array_index this renderer does not emit — so every view
-    // after the first would rasterize through the first view's foveation. That
-    // is not a subtle error: on an Apple Vision Pro it warped the right eye
-    // while leaving the left eye clean, and it is invisible on a Simulator that
-    // reports one view and no foveation at all. The configuration now asks for a
-    // layout that cannot produce it; this says so if one ever does.
-    if (rateMapCount > 0 && rateMapCount < viewCount && !loggedRateMapMismatch_) {
+    // Whether the portal is *also* cut into the stencil, which is an
+    // optimisation on top of it rather than a part of it. With the mask, the
+    // pixels outside the portal are never shaded — at a low immersion amount
+    // that is most of each eye. Without it, they are shaded and then covered.
+    // Only the picture's cost differs; the picture does not.
+    const bool mask = portal && portalStencilFormat_ != MTLPixelFormatInvalid;
+    if (portal && !mask && !loggedPortalRefused_) {
+        loggedPortalRefused_ = true;
+        os_log(CompositorLog(),
+               "the layer offered no render context stencil format, so the "
+               "portal is drawn but not masked: everything outside it is being "
+               "shaded and then covered");
+    }
+
+    // Fewer rate maps than views is expected under the layered layout and
+    // nowhere else: there the maps are layers of one map, selected by the
+    // render_target_array_index each vertex program emits. Under any other
+    // layout nothing selects them, so every view after the first rasterizes
+    // through the first view's foveation — which on an Apple Vision Pro warped
+    // the right eye while leaving the left one clean, and which a Simulator
+    // reporting one view and no foveation cannot reproduce.
+    if (!layered && rateMapCount > 0 && rateMapCount < viewCount &&
+        !loggedRateMapMismatch_) {
         loggedRateMapMismatch_ = true;
         os_log_error(CompositorLog(),
-                     "%zu view(s) but only %zu rasterization rate map(s): every "
-                     "view after the first is being rasterized through another "
-                     "eye's foveation",
-                     viewCount, rateMapCount);
+                     "%zu view(s) but only %zu rasterization rate map(s) under "
+                     "layout %u: every view after the first is being rasterized "
+                     "through another eye's foveation",
+                     viewCount, rateMapCount, (unsigned)layout_);
     }
+
+    // Claims the portal on the command buffer, **before** any encoder is open
+    // on it.
+    //
+    // The order is the whole of this function's contract with Compositor
+    // Services and it is not interchangeable. `cp_drawable_add_render_context`
+    // takes the command buffer, not the encoder, because it encodes on it —
+    // and encoding on a command buffer that already has a live render encoder
+    // is exactly what Metal refuses:
+    //
+    //     -[IOGPUMetalCommandBuffer encodeWaitForEvent:value:timeout:]:
+    //     error 'encodeWaitForEvent:value: with uncommitted encoder'
+    //
+    // which is what a headset reported when this was called from inside the
+    // encoder's own setup. Apple's own sequence is add-context, then open the
+    // encoder, then draw the mask into it.
+    auto addPortal = [&]() -> cp_drawable_render_context_t {
+        if (!portal) {
+            return nullptr;
+        }
+        cp_drawable_render_context_t context =
+            cp_drawable_add_render_context(drawable, commandBuffer);
+        if (context == nullptr) {
+            // Declared nonnull, so this is a refusal the condition above did
+            // not anticipate. Nothing here can rescue the frame — presenting
+            // without a context is what aborts the process — but not
+            // dereferencing null leaves a log line behind to read afterwards.
+            os_log_error(CompositorLog(),
+                         "the drawable refused a render context at frame %llu; "
+                         "the present that follows is expected to abort",
+                         (unsigned long long)frameIndex_);
+        }
+        return context;
+    };
+
+    // Cuts the portal into the encoder's stencil, once the encoder exists.
+    //
+    // The mask goes down before anything else is drawn, because it writes the
+    // value every later draw is tested against. Drawing it is also destructive
+    // to encoder state its own documentation names: the depth-stencil state,
+    // the viewports, the vertex amplification count and some texture bindings
+    // are all left as the mask wanted them, and every one of them has to be put
+    // back. EncodeViewContent sets the first, the second and the last per view.
+    // The amplification count is put back here.
+    auto openPortal = [&](cp_drawable_render_context_t context,
+                          id<MTLRenderCommandEncoder> encoder) {
+        // A reference of zero against a stencil cleared to zero passes
+        // everywhere, which is what an unmasked frame wants. The test cannot
+        // simply be switched off: where there is a stencil attachment at all,
+        // the pipelines were built against it and the states carry the compare.
+        [encoder setStencilReferenceValue:0];
+        if (context == nullptr || !mask) {
+            return;
+        }
+        cp_drawable_render_context_draw_mask_on_stencil_attachment(
+            context, encoder, kPortalStencilValue);
+        [encoder setStencilReferenceValue:kPortalStencilValue];
+
+        // The compositor draws its mask into both eyes at once, so it leaves
+        // the encoder amplifying two views. Nothing in this renderer amplifies
+        // anything — the eye is a separate draw, which is what lets Mode B bind
+        // a different texture to each — so its pipelines allow a count of one,
+        // and the first draw after the mask died on a headset:
+        //
+        //     Vertex Amplification Count (2) must be between (inclusive) 1 and
+        //     the maximum vertex amplification count specified in the pipeline
+        //     state (1)
+        //
+        // A Simulator cannot catch this either: it has no stencil format, so
+        // the mask this undoes is never drawn there.
+        [encoder setVertexAmplificationCount:1 viewMappings:nullptr];
+
+        // Stated rather than inherited, for the same reason and not for a
+        // failure that has been seen. The sky is a box drawn from the inside
+        // and the quads have no winding chosen for them, both of which are only
+        // safe while nothing culls — which used to be guaranteed by nobody in
+        // this file setting a cull mode. A draw this file did not encode has
+        // now touched the encoder, so the default is no longer this renderer's
+        // to assume. It is what the default already is, so it changes nothing
+        // except who is responsible for it.
+        [encoder setCullMode:MTLCullModeNone];
+    };
+
+    // The compositor's own fade at the portal's edge is encoded here, which is
+    // why the encoder is handed over rather than simply ended: the render
+    // context takes ownership and calls endEncoding itself.
+    auto endPortal = [&](cp_drawable_render_context_t context,
+                         id<MTLRenderCommandEncoder> encoder) {
+        if (context == nullptr) {
+            [encoder endEncoding];
+            return;
+        }
+        cp_drawable_render_context_end_encoding(context, encoder);
+        ++portalFrames_;
+        if (!loggedPortal_) {
+            loggedPortal_ = true;
+            os_log(CompositorLog(),
+                   "drawing through a portal: %zu view(s), %{public}s (stencil "
+                   "format %lu, mask value %u)",
+                   viewCount, mask ? "masked" : "unmasked",
+                   (unsigned long)portalStencilFormat_,
+                   (unsigned)kPortalStencilValue);
+        }
+    };
+
+    // Names the pass after what it is about to draw, which is the same question
+    // for every view in it.
+    NSString* const label = stereoFrames[0] != nil ? @"SpaghettiPad eye"
+                            : engineFrame != nil   ? @"SpaghettiPad screen"
+                                                   : @"SpaghettiPad test pattern";
+
+    if (layered) {
+        // Every view shares one texture and one depth texture; the slice is not
+        // set on the attachments because the draws choose it themselves.
+        cp_view_texture_map_t firstMap =
+            cp_view_get_view_texture_map(cp_drawable_get_view(drawable, 0));
+        const size_t textureIndex =
+            cp_view_texture_map_get_texture_index(firstMap);
+        id<MTLTexture> colorTexture =
+            cp_drawable_get_color_texture(drawable, textureIndex);
+
+        // How many slices there actually are, which is not the same question as
+        // how many views the drawable reports, and is answered by the texture
+        // rather than by the layout's name. A Simulator under this layout
+        // renders one view into a one-slice array; a headset gives one slice per
+        // eye. Everything below sizes itself from this, so the attachments, the
+        // pass and the index the shaders emit cannot disagree with each other.
+        const NSUInteger slices = colorTexture.arrayLength;
+        const bool arrayed = slices > 1;
+
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = colorTexture;
+        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0.02, 0.02, 0.03, 1.0);
+
+        id<MTLTexture> depthTexture =
+            cp_drawable_get_depth_texture(drawable, textureIndex);
+        if (depthTexture != nil) {
+            pass.depthAttachment.texture = depthTexture;
+            pass.depthAttachment.loadAction = MTLLoadActionClear;
+            // The compositor reprojects the presented frame using this depth
+            // buffer, so it has to survive the pass.
+            pass.depthAttachment.storeAction = MTLStoreActionStore;
+            pass.depthAttachment.clearDepth = 0.0;
+        }
+        // Sized to the colour texture, not to the view count, so the pass's
+        // array length is within every attachment it has.
+        id<MTLTexture> stencilTexture = PortalStencil(colorTexture, slices);
+        if (stencilTexture != nil) {
+            pass.stencilAttachment.texture = stencilTexture;
+            pass.stencilAttachment.loadAction = MTLLoadActionClear;
+            // Memoryless, and read only inside this pass.
+            pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+            pass.stencilAttachment.clearStencil = 0;
+        }
+        if (rateMapCount > 0) {
+            pass.rasterizationRateMap =
+                cp_drawable_get_rasterization_rate_map(drawable, 0);
+        }
+
+        // What makes the array index a vertex program emits mean anything, and
+        // only where there is an array to index. Zero is Metal's "this pass is
+        // not layered", which is the truth for a single-slice drawable however
+        // the layout is named.
+        pass.renderTargetArrayLength = arrayed ? slices : 0;
+
+        // Before the encoder, not after it. See addPortal.
+        cp_drawable_render_context_t context = addPortal();
+
+        id<MTLRenderCommandEncoder> encoder =
+            [commandBuffer renderCommandEncoderWithDescriptor:pass];
+        if (encoder == nil) {
+            viewEncodeSkips_ += viewCount;
+            return;
+        }
+        encoder.label = label;
+
+        openPortal(context, encoder);
+        for (size_t index = 0; index < viewCount; ++index) {
+            cp_view_texture_map_t map =
+                cp_view_get_view_texture_map(cp_drawable_get_view(drawable, index));
+            const MTLViewport viewport = cp_view_texture_map_get_viewport(map);
+            if (viewport.width <= 0.0 || viewport.height <= 0.0) {
+                ++viewEncodeSkips_;
+                continue;
+            }
+            EncodeViewContent(encoder, drawable, index,
+                              arrayed ? (uint32_t)index : 0, viewport,
+                              engineFrame, stereoFrames, pose);
+        }
+        endPortal(context, encoder);
+        return;
+    }
+
+    // Under the shared layout every view lands in one texture, so only the
+    // first pass over a given slice may clear it. Under dedicated each view has
+    // its own destination and every pass clears.
+    std::vector<uint64_t> cleared;
 
     for (size_t index = 0; index < viewCount; ++index) {
         cp_view_t view = cp_drawable_get_view(drawable, index);
@@ -1294,9 +1854,11 @@ void Compositor::EncodeViews(cp_drawable_t drawable,
         }
         const MTLLoadAction load = first ? MTLLoadActionClear : MTLLoadActionLoad;
 
-        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture =
+        id<MTLTexture> colorTexture =
             cp_drawable_get_color_texture(drawable, textureIndex);
+
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = colorTexture;
         pass.colorAttachments[0].slice = slice;
         pass.colorAttachments[0].loadAction = load;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -1313,10 +1875,22 @@ void Compositor::EncodeViews(cp_drawable_t drawable,
             pass.depthAttachment.storeAction = MTLStoreActionStore;
             pass.depthAttachment.clearDepth = 0.0;
         }
+        // One slice per pass here, so the stencil is a plain 2D texture however
+        // many views the drawable has.
+        id<MTLTexture> stencilTexture = PortalStencil(colorTexture, 1);
+        if (stencilTexture != nil) {
+            pass.stencilAttachment.texture = stencilTexture;
+            pass.stencilAttachment.loadAction = MTLLoadActionClear;
+            pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+            pass.stencilAttachment.clearStencil = 0;
+        }
         if (rateMapCount > 0) {
             pass.rasterizationRateMap = cp_drawable_get_rasterization_rate_map(
                 drawable, index < rateMapCount ? index : rateMapCount - 1);
         }
+
+        // Before the encoder, not after it. See addPortal.
+        cp_drawable_render_context_t context = addPortal();
 
         id<MTLRenderCommandEncoder> encoder =
             [commandBuffer renderCommandEncoderWithDescriptor:pass];
@@ -1324,39 +1898,13 @@ void Compositor::EncodeViews(cp_drawable_t drawable,
             ++viewEncodeSkips_;
             continue;
         }
-        id<MTLTexture> eyeFrame =
-            index < SPAGHETTIPAD_EYE_COUNT ? stereoFrames[index] : nil;
+        encoder.label = label;
 
-        encoder.label = eyeFrame != nil    ? @"SpaghettiPad eye"
-                        : engineFrame != nil ? @"SpaghettiPad screen"
-                                             : @"SpaghettiPad test pattern";
-        [encoder setViewport:viewport];
-        [encoder setDepthStencilState:depthState_];
-
-        const simd_float4x4 viewProjection =
-            ViewProjection(drawable, view, index, pose.originFromDevice);
-
-        if (eyeFrame != nil) {
-            // Mode B. No room, and no screen to hang anything on: the engine has
-            // drawn this eye's whole view, sky and ground included, because in
-            // this mode the game's own world is the environment. Anything drawn
-            // around it here would be a second world competing with the first.
-            ++eyeEncodes_;
-            EncodeEye(encoder, drawable, index, eyeFrame);
-        } else if (engineFrame != nil) {
-            // The room, then the screen in it. The test pattern gets neither: it
-            // is a full-view overlay measured in the view's own coordinates, and
-            // putting a room behind it would change the picture the Phase 2
-            // evidence was captured from.
-            ++screenEncodes_;
-            EncodeEnvironment(encoder, viewProjection);
-            EncodeScreen(encoder, viewProjection, engineFrame);
-        } else {
-            ++patternEncodes_;
-            EncodePattern(encoder, viewProjection, pose.originFromDevice, index,
-                          viewport);
-        }
-        [encoder endEncoding];
+        // One slice per pass, so there is one layer to name and it is layer 0.
+        openPortal(context, encoder);
+        EncodeViewContent(encoder, drawable, index, 0, viewport, engineFrame,
+                          stereoFrames, pose);
+        endPortal(context, encoder);
     }
 }
 
@@ -1403,26 +1951,97 @@ DevicePose Compositor::AnchorDrawable(cp_drawable_t drawable) {
     // Placed from a fully tracked pose only: an orientation-only pose has no
     // position to put a room around, and a room placed from one would be in the
     // wrong part of the world for the rest of the session.
-    if (!roomPlaced_ && pose.state == ar_device_anchor_tracking_state_tracked) {
-        worldFromScreen_ = PlaceScreen(pose.originFromDevice);
-        // Placed from the same pose and at the same moment as the screen, so
-        // switching between the modes mid-session does not move the world.
-        worldFromRecentre_ = PlaceRecentre(pose.originFromDevice);
-        const simd_float3 head =
-            spaghettipad::TransformTranslation(pose.originFromDevice);
-        const bool groundOrigin = head.y > kGroundOriginThresholdMetres;
-        const float floorHeight =
-            groundOrigin ? 0.0f : head.y - kNominalEyeHeightMetres;
-        roomCentre_ = simd_make_float3(head.x, floorHeight, head.z);
-        roomPlaced_ = true;
+    if (pose.state == ar_device_anchor_tracking_state_tracked) {
+        if (recentreRequested_) {
+            // An asked-for placement outranks a settle: a wearer holding the
+            // chord before the room has ever been placed is saying "here",
+            // which is exactly what the settle was waiting to be told.
+            recentreRequested_ = false;
+            PlaceRoom(pose.originFromDevice,
+                      roomPlaced_ ? "recentred" : "placed on request");
+        } else if (!roomPlaced_ && RoomPoseSettled(pose.originFromDevice)) {
+            PlaceRoom(pose.originFromDevice, "placed");
+        }
+    }
+    return pose;
+}
 
-        const simd_float3 centre =
-            spaghettipad::TransformTranslation(worldFromScreen_);
+// Whether the head has held one pose long enough to hang a room off it. Reads
+// the two things a placement reads and nothing else: where the wearer is, and
+// which way they are facing along the floor.
+bool Compositor::RoomPoseSettled(simd_float4x4 originFromDevice) {
+    const auto now = std::chrono::steady_clock::now();
+    const simd_float3 head = spaghettipad::TransformTranslation(originFromDevice);
+    const simd_float3 forward = spaghettipad::HorizontalForward(originFromDevice);
+
+    if (!settling_) {
+        settling_ = true;
+        settleStart_ = now;
+        settleSince_ = now;
+        settleHead_ = head;
+        settleForward_ = forward;
+        return false;
+    }
+
+    const float moved = simd_distance(head, settleHead_);
+    const float turned = AngleBetween(forward, settleForward_);
+    if (moved > kRoomSettleMetres || turned > kRoomSettleRadians) {
+        settleSince_ = now;
+        settleHead_ = head;
+        settleForward_ = forward;
+    }
+
+    const double still =
+        std::chrono::duration<double>(now - settleSince_).count();
+    if (still >= kRoomSettleSeconds) {
+        return true;
+    }
+
+    const double waited =
+        std::chrono::duration<double>(now - settleStart_).count();
+    if (waited >= kRoomSettleTimeoutSeconds) {
         os_log(CompositorLog(),
-               "room placed: a %.2f m screen centred (%.2f, %.2f, %.2f) m, %.2f m "
-               "ahead of the wearer",
-               (double)kScreenWidthMetres, (double)centre.x, (double)centre.y,
-               (double)centre.z, (double)kScreenDistanceMetres);
+               "the head never held still for %.1f s, so the room is being placed "
+               "from a moving one after %.1f s; it can be recentred",
+               kRoomSettleSeconds, waited);
+        return true;
+    }
+    return false;
+}
+
+// Hangs everything the wearer's pose decides off one pose: the flat screen
+// Mode A shows the game on, the frame Mode B nails the game's camera to — and
+// so the HUD panel, which is a fixed object in that frame — and the floor and
+// sky the room is built around. All from the same pose, so switching modes
+// mid-session does not move the world, and so a recentre moves all of it
+// together rather than leaving the floor where the wearer used to be.
+void Compositor::PlaceRoom(simd_float4x4 originFromDevice, const char* why) {
+    worldFromScreen_ = PlaceScreen(originFromDevice);
+    worldFromRecentre_ = PlaceRecentre(originFromDevice);
+
+    const simd_float3 head = spaghettipad::TransformTranslation(originFromDevice);
+    const bool groundOrigin = head.y > kGroundOriginThresholdMetres;
+    const float floorHeight =
+        groundOrigin ? 0.0f : head.y - kNominalEyeHeightMetres;
+    roomCentre_ = simd_make_float3(head.x, floorHeight, head.z);
+
+    const bool first = !roomPlaced_;
+    roomPlaced_ = true;
+
+    const simd_float3 centre =
+        spaghettipad::TransformTranslation(worldFromScreen_);
+    // The head's own position is in this line because it is what a later
+    // "the HUD is off to one side" report has to be read against: the panel is a
+    // fixed object in the frame placed here, so the difference between this pose
+    // and the pose the wearer is in when they report it is the whole answer.
+    os_log(CompositorLog(),
+           "room %{public}s: a %.2f m screen centred (%.2f, %.2f, %.2f) m, %.2f m "
+           "ahead of the wearer, whose head was at (%.2f, %.2f, %.2f) m. Mode B's "
+           "HUD panel hangs in front of this same pose",
+           why, (double)kScreenWidthMetres, (double)centre.x, (double)centre.y,
+           (double)centre.z, (double)kScreenDistanceMetres, (double)head.x,
+           (double)head.y, (double)head.z);
+    if (first) {
         os_log(CompositorLog(),
                "floor drawn at y = %.2f m, %.2f m below the head, because the head "
                "is %.2f m above the world origin and that origin is therefore "
@@ -1431,7 +2050,57 @@ DevicePose Compositor::AnchorDrawable(cp_drawable_t drawable) {
                groundOrigin ? "treated as the ground"
                             : "where the head started");
     }
-    return pose;
+}
+
+// The recentre gesture, timed here because this is the thread with the frame
+// clock on it. The chord itself is read in the shell, above SDL: this only ever
+// *reads* the framework's controllers, and installs nothing on them, because
+// SDL's MFi driver owns their valueChangedHandler and taking it would take the
+// game's input with it.
+//
+// Deliberately not a single button. Every button on a pad is something Mario
+// Kart 64 does — the two stick clicks together are already the settings menu —
+// and a recentre that fired mid-race would move the world under a wearer at
+// speed, which is the one thing in this app that can make someone ill. All four
+// shoulders and triggers held together for a second is a gesture nothing in the
+// game asks for.
+void Compositor::PollRecentreChord() {
+    if (frameIndex_ % kRecentrePollFrames != 0) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool held = SpaghettiPad_InputRecentreChordHeld() != 0;
+
+    if (!held) {
+        recentreHeld_ = false;
+        // Released, so the next hold is allowed to fire.
+        recentreArmed_ = true;
+        return;
+    }
+
+    if (!recentreHeld_) {
+        recentreHeld_ = true;
+        recentreHeldSince_ = now;
+        return;
+    }
+
+    if (!recentreArmed_) {
+        return;
+    }
+
+    const double heldFor =
+        std::chrono::duration<double>(now - recentreHeldSince_).count();
+    if (heldFor < kRecentreHoldSeconds) {
+        return;
+    }
+
+    recentreArmed_ = false;
+    recentreRequested_ = true;
+    os_log(CompositorLog(),
+           "recentre asked for: both shoulders and both triggers held %.1f s. The "
+           "room moves to the wearer's current pose on the next tracked frame",
+           heldFor);
 }
 
 void Compositor::RenderFrame() {
@@ -1444,6 +2113,9 @@ void Compositor::RenderFrame() {
     // compositor times this phase to decide how early to wake the next frame.
     cp_frame_start_update(frame);
     ++frameIndex_;
+    // Read before the pose is queried, so a chord that completes on this frame
+    // recentres from this frame's pose rather than from the previous one's.
+    PollRecentreChord();
     cp_frame_end_update(frame);
 
     cp_frame_timing_t timing = cp_frame_predict_timing(frame);
@@ -1627,13 +2299,74 @@ void Compositor::RenderFrame() {
         // knowing which branch ran and trusting a first-frame log line about it.
         os_log(CompositorLog(),
                "view encodes so far: %llu eye (Mode B), %llu screen, %llu "
-               "pattern, %llu skipped; %llu command buffer(s) failed on the GPU",
+               "pattern, %llu skipped; %llu drawn through a portal; %llu "
+               "command buffer(s) failed on the GPU",
                (unsigned long long)eyeEncodes_,
                (unsigned long long)screenEncodes_,
                (unsigned long long)patternEncodes_,
                (unsigned long long)viewEncodeSkips_,
+               (unsigned long long)portalFrames_,
                (unsigned long long)commandBufferErrors_.load(
                    std::memory_order_relaxed));
+
+        // How much of the memory limit is left, and how fast it is going.
+        //
+        // On 2026-08-02 a wearer's Mode B session was killed at the end of a
+        // race with JETSAM_REASON_MEMORY_PERPROCESSLIMIT after 5 m 50 s against
+        // a 5120 MB limit, and this app had nothing to say about it: there was
+        // no memory instrumentation anywhere, so the archive could name the
+        // reason and not the cause. A footprint every 600 frames turns "it died"
+        // into a curve, which is the difference between knowing something leaks
+        // and knowing what.
+        //
+        // os_proc_available_memory is the headroom before that limit rather
+        // than the resident size — the number jetsam actually acts on, and 0
+        // when a debugger has lifted the limit.
+        {
+            const size_t available = os_proc_available_memory();
+            task_vm_info_data_t info = {};
+            mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+            const kern_return_t got =
+                task_info(mach_task_self(), TASK_VM_INFO,
+                          (task_info_t)&info, &count);
+            static size_t firstAvailable = 0;
+            if (firstAvailable == 0) {
+                firstAvailable = available;
+            }
+            os_log(CompositorLog(),
+                   "memory: %.1f MiB footprint, %.1f MiB before the limit, "
+                   "%.1f MiB consumed since the first of these",
+                   got == KERN_SUCCESS
+                       ? (double)info.phys_footprint / (1024.0 * 1024.0)
+                       : -1.0,
+                   (double)available / (1024.0 * 1024.0),
+                   (double)((int64_t)firstAvailable - (int64_t)available) /
+                       (1024.0 * 1024.0));
+
+            // What of that footprint is textures, from the engine's own books.
+            //
+            // The line above turned "it died" into a curve but could not say
+            // what was drawing it: on 2026-08-03 a session climbed to 8065 MiB
+            // with a texture cache that was inside its budget the whole way,
+            // because an evicted entry left its GPU texture allocated. These
+            // two numbers are the ones that disagreed. If they now rise and
+            // fall together, the cache's budget is the process's budget; if
+            // the first climbs while the second holds, something is allocating
+            // textures the cache never hears about.
+            uint64_t gpuBytes = 0, gpuTextures = 0, cacheEntries = 0,
+                     cacheBytes = 0, evictions = 0;
+            SpaghettiPad_EngineTextureMemory(&gpuBytes, &gpuTextures,
+                                             &cacheEntries, &cacheBytes,
+                                             &evictions);
+            os_log(CompositorLog(),
+                   "textures: %.1f MiB live on the GPU in %llu, %.1f MiB "
+                   "billed to %llu cache entries, %llu evicted so far",
+                   (double)gpuBytes / (1024.0 * 1024.0),
+                   (unsigned long long)gpuTextures,
+                   (double)cacheBytes / (1024.0 * 1024.0),
+                   (unsigned long long)cacheEntries,
+                   (unsigned long long)evictions);
+        }
 
         // Where the wearer is, and where the screen is *from where they are*.
         // The second number is the whole of the world-locking claim in a form
@@ -1733,6 +2466,14 @@ bool Compositor::Start(cp_layer_renderer_t layerRenderer) {
     // behind them — which is the one way a world-locked screen can be worse than
     // a head-locked one.
     roomPlaced_ = false;
+    // And it waits for a still head again, from scratch. A settle left running
+    // across a close and reopen would time out against the previous session's
+    // clock and place the new room from the first pose it saw, which is the
+    // behaviour this replaced.
+    settling_ = false;
+    recentreHeld_ = false;
+    recentreArmed_ = true;
+    recentreRequested_ = false;
     lastPose_ = DevicePose();
     // Until a tracked pose says otherwise, the room sits where it sat before
     // any of this existed: two metres along the origin's own -Z. With no device
@@ -1749,11 +2490,20 @@ bool Compositor::Start(cp_layer_renderer_t layerRenderer) {
     loggedFirstStereoFrame_ = false;
     loggedStereoRefused_ = false;
     loggedRateMapMismatch_ = false;
+    loggedPortal_ = false;
+    loggedPortalRefused_ = false;
     stereoFrames_ = 0;
     eyeEncodes_ = 0;
     screenEncodes_ = 0;
     patternEncodes_ = 0;
     viewEncodeSkips_ = 0;
+    portalFrames_ = 0;
+    // Dropped rather than reused: a new session may hand back a differently
+    // shaped drawable, and the first frame that needs one will make it again.
+    portalStencil_ = nil;
+    portalStencilWidth_ = 0;
+    portalStencilHeight_ = 0;
+    portalStencilSlices_ = 0;
     commandBufferErrors_.store(0, std::memory_order_relaxed);
     publishedViewsValid_ = -1;
     rects_.reserve(kMaxPatternRects);

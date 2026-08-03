@@ -6,14 +6,19 @@
 // accessory input into the same engine.
 //
 // Storage, the engine thread, and — in SpaghettiPadCompositor.mm — the
-// compositor are live. The import and input entry points below are declared by
-// the header and called by the shell, so they exist here as explicit, logged
-// refusals rather than as silent no-ops that would look like success.
+// compositor are live. Input is live too, though almost none of it is here:
+// routing belongs to the engine's own control deck, and the 6DoF half belongs
+// to SpaghettiPadAccessorySteering.mm. What is left in this file is reporting.
+//
+// The import entry points below are declared by the header and called by the
+// shell, so they exist here as explicit, logged refusals rather than as silent
+// no-ops that would look like success.
 
 #import "SpaghettiPadBridge.h"
 
 #import <AVFAudio/AVFAudio.h>
 #import <Foundation/Foundation.h>
+#import <GameController/GameController.h>
 
 #import <os/log.h>
 
@@ -101,6 +106,21 @@ std::string gBundlePath;
 // the writable container. Nothing in this repository ever ships one.
 NSString* const kGameArchiveName = @"mk64.o2r";
 
+// Dropped in the container immediately before the engine is started to extract,
+// and only then. Extraction runs inside the engine, and every way it can fail
+// ends in _Exit(1) — upstream's deliberate choice, because those bail-outs run
+// before the game world exists and unwinding through it crashes. From outside,
+// _Exit is indistinguishable from the app being closed, so a failed extraction
+// would otherwise leave nothing behind but a log nobody thought to read. This
+// file is what the next launch reads to say "that did not work" instead of
+// silently offering the same button again.
+NSString* const kExtractionMarkerName = @".extraction-in-progress";
+
+// Whether the previous launch died during extraction. Resolved once, in
+// SpaghettiPad_RuntimeInit, so that later calls describe that launch rather than
+// a marker this one has since written.
+bool gPreviousExtractionFailed = false;
+
 bool DirectoryExists(NSString* path) {
     BOOL isDirectory = NO;
     return [[NSFileManager defaultManager] fileExistsAtPath:path
@@ -155,6 +175,28 @@ int SpaghettiPad_RuntimeInit(const char* documentsPath, const char* bundlePath) 
 
     gDocumentsPath = documentsPath;
     gBundlePath = bundlePath;
+
+    // Read and cleared exactly once per process, before anything can write a new
+    // one, so the answer describes the launch that left the marker rather than
+    // this one. SwiftUI calls this again whenever the container changes under
+    // it, and a second read would consume a marker belonging to an extraction
+    // still in flight.
+    static dispatch_once_t markerOnce;
+    dispatch_once(&markerOnce, ^{
+        NSString* marker =
+            [documents stringByAppendingPathComponent:kExtractionMarkerName];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:marker]) {
+            return;
+        }
+        gPreviousExtractionFailed = SpaghettiPad_GameArchiveReady() == 0;
+        if (gPreviousExtractionFailed) {
+            os_log_error(ShellLog(),
+                         "the previous launch started extracting and did not "
+                         "finish; see the engine log in logs/");
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:marker error:nil];
+    });
+
     return 1;
 }
 
@@ -168,6 +210,45 @@ int SpaghettiPad_GameArchiveReady(void) {
     NSDictionary* attributes =
         [[NSFileManager defaultManager] attributesOfItemAtPath:archive error:nil];
     return (attributes != nil && attributes.fileSize > 0) ? 1 : 0;
+}
+
+// How many importable ROMs the container holds.
+//
+// Answerable before the engine has started, which is the whole point: with no
+// game archive the launch window has to decide between offering extraction and
+// offering nothing, and the engine that could tell it is the thing that will not
+// start. The extension test matches the engine's own container scan in
+// GameExtractor::GetRoms — this counts candidates, and only the engine's hash
+// check can say whether one is the supported game.
+int SpaghettiPad_ImportedRomCount(void) {
+    if (gDocumentsPath.empty()) {
+        return 0;
+    }
+
+    NSArray<NSString*>* entries = [[NSFileManager defaultManager]
+        contentsOfDirectoryAtPath:@(gDocumentsPath.c_str())
+                            error:nil];
+
+    int count = 0;
+    for (NSString* entry in entries) {
+        if ([entry.pathExtension caseInsensitiveCompare:@"z64"] == NSOrderedSame) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// Non-zero when the container holds a ROM the engine has not turned into a game
+// archive yet, which is exactly when starting the engine means extracting.
+int SpaghettiPad_ExtractionPending(void) {
+    return (SpaghettiPad_GameArchiveReady() == 0 &&
+            SpaghettiPad_ImportedRomCount() > 0)
+               ? 1
+               : 0;
+}
+
+int SpaghettiPad_PreviousExtractionFailed(void) {
+    return gPreviousExtractionFailed ? 1 : 0;
 }
 
 namespace {
@@ -488,10 +569,28 @@ int SpaghettiPad_StartEngine(void) {
         // through SDL_ShowMessageBox — which cannot draw anything with
         // SDL_VIDEO off — and then exits the process. Refusing here is the
         // difference between a clear message and the app vanishing.
-        os_log_error(ShellLog(),
-                     "refusing to start the engine: no game archive exists yet");
-        gEngineStarted.store(false, std::memory_order_release);
-        return 0;
+        //
+        // But refusing on the archive alone refused the only thing that could
+        // ever create one. Extraction is the engine's: GameExtractor scans this
+        // container, Torch builds mk64.o2r, and both run inside GameEngine
+        // ::Create() on the way to the game loop. So an imported ROM and no
+        // archive is not the empty case — it is the first run, and the engine
+        // has to start for it to finish.
+        if (!SpaghettiPad_ExtractionPending()) {
+            os_log_error(ShellLog(),
+                         "refusing to start the engine: the container holds "
+                         "neither a game archive nor a ROM to extract");
+            gEngineStarted.store(false, std::memory_order_release);
+            return 0;
+        }
+
+        NSString* marker = [@(gDocumentsPath.c_str())
+            stringByAppendingPathComponent:kExtractionMarkerName];
+        [[NSData data] writeToFile:marker atomically:YES];
+        os_log(ShellLog(),
+               "no game archive yet; starting the engine to extract %d ROM(s) "
+               "from the container. This takes minutes and the app is not hung.",
+               SpaghettiPad_ImportedRomCount());
     }
 
     // The N64 game loop recurses deeply enough that the 512 KiB a secondary
@@ -534,6 +633,27 @@ void SpaghettiPad_SetImmersiveActive(int active) {
            active != 0 ? "active" : "inactive");
 }
 
+void SpaghettiPad_SetImmersionAmount(double amount) {
+    // Logged on movement rather than on arrival. The Digital Crown reports
+    // continuously while it turns, and a line per report would bury the session
+    // in a log that is read to find out what a wearer was doing. A twentieth of
+    // the dial is finer than anyone sets it deliberately and coarse enough that
+    // a full sweep costs twenty lines.
+    //
+    // -2 is a bucket no amount produces, so the first report of a session is
+    // always a change and always logged.
+    static std::atomic<int> lastBucket{-2};
+    const int bucket = amount < 0.0 ? -1 : (int)(amount * 20.0 + 0.5);
+    if (lastBucket.exchange(bucket, std::memory_order_relaxed) == bucket) {
+        return;
+    }
+    if (amount < 0.0) {
+        os_log(ShellLog(), "immersion: no amount (a style that does not dial)");
+    } else {
+        os_log(ShellLog(), "immersion dialled to %.2f", amount);
+    }
+}
+
 // ------------------------------------------------------------------- input
 //
 // There is no input layer here, and that is the finding rather than an omission.
@@ -556,10 +676,96 @@ os_log_t InputLog() {
 
 std::atomic<int> gConnectedDevices{0};
 
+// What the GameController framework hands this process, watched separately from
+// what the engine ends up holding.
+//
+// This is still reporting rather than routing, and it exists because a wearer
+// lost the sticks on a pair of Sense controllers powered on after launch while
+// the buttons kept working. The archive showed why: the app enumerated the right
+// Sense and never the left — and the left is where the left thumbstick is, which
+// is what Mario Kart 64 steers and navigates menus with. What the archive could
+// not say is which layer lost it. Three are stacked here, and only one of them
+// is this project's to fix:
+//
+//   - the framework may never have handed the app the second controller, in
+//     which case nothing in this process can conjure it;
+//   - SDL's MFi driver may have refused it — IOS_AddMFIJoystickDevice returns
+//     false for a device it cannot read, frees it, and says nothing, which for a
+//     half-pair with no face buttons on it is a real possibility;
+//   - or the SDL_CONTROLLERDEVICEADDED event may have been lost before
+//     Ship::SDLAddRemoveDeviceEventHandler could act on it, which is a fault
+//     this lane has had once before.
+//
+// An observer of the framework's own notifications separates the first from the
+// other two, because it sits above SDL and hears what SDL was offered. It routes
+// nothing: the engine's control deck remains the only thing that opens a device.
+std::atomic<int> gFrameworkControllers{0};
+
+NSString* FrameworkControllerNames() {
+    NSMutableArray<NSString*>* names = [NSMutableArray array];
+    for (GCController* controller in [GCController controllers]) {
+        [names addObject:(controller.vendorName ?: @"unnamed")];
+    }
+    return [[names sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)]
+        componentsJoinedByString:@", "];
+}
+
+// Reports what the framework holds, and — a moment later, so the engine has had
+// frames to open it — whether the control deck agrees. A framework count above
+// the deck's is a device the app was offered and did not get: the one case worth
+// a warning, because it is the one that can be fixed here.
+void ReportFrameworkControllers(const char* what, GCController* controller) {
+    const int count = static_cast<int>([GCController controllers].count);
+    gFrameworkControllers.store(count, std::memory_order_release);
+
+    os_log(InputLog(), "GameController %{public}s: %{public}s; the framework now holds %d: %{public}s",
+           what, controller.vendorName.UTF8String ?: "unnamed", count,
+           FrameworkControllerNames().UTF8String);
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        const int framework = gFrameworkControllers.load(std::memory_order_acquire);
+        const int deck = gConnectedDevices.load(std::memory_order_acquire);
+        if (framework > deck) {
+            os_log_error(InputLog(),
+                         "%d controller(s) reached this app but only %d reached the game: "
+                         "%{public}s. A Sense pair split this way loses the left stick, which "
+                         "is steering and menu selection",
+                         framework, deck, FrameworkControllerNames().UTF8String);
+        }
+    });
+}
+
+// Registered once, on the main queue, because that is where the framework posts.
+// Deliberately not registered from SpaghettiPad_InputInit: nothing calls it.
+void EnsureControllerObservers() {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+            [center addObserverForName:GCControllerDidConnectNotification
+                                object:nil
+                                 queue:[NSOperationQueue mainQueue]
+                            usingBlock:^(NSNotification* note) {
+                              ReportFrameworkControllers("connected", note.object);
+                            }];
+            [center addObserverForName:GCControllerDidDisconnectNotification
+                                object:nil
+                                 queue:[NSOperationQueue mainQueue]
+                            usingBlock:^(NSNotification* note) {
+                              ReportFrameworkControllers("disconnected", note.object);
+                            }];
+            os_log(InputLog(), "watching GameController connections; the framework holds %d: %{public}s",
+                   static_cast<int>([GCController controllers].count),
+                   FrameworkControllerNames().UTF8String);
+        });
+    });
+}
+
 } // namespace
 
 void SpaghettiPad_InputDevicesChanged(int count, const char* names) {
     gConnectedDevices.store(count, std::memory_order_release);
+    EnsureControllerObservers();
 
     if (count <= 0) {
         os_log(InputLog(), "no game controller is connected");
@@ -580,6 +786,42 @@ void SpaghettiPad_InputFirstActivity(int port, unsigned buttons, int stickX, int
            port, buttons, stickX, stickY);
 }
 
+int SpaghettiPad_InputRecentreChordHeld(void) {
+    // Merged across every controller the framework holds, for the same reason
+    // the menu's gamepad navigation merges: a PS VR2 Sense pair can reach this
+    // app as two devices, and this chord needs a hand on each. Asking one
+    // controller for all four inputs would make it unreachable on the hardware
+    // this lane is developed against.
+    bool leftShoulder = false;
+    bool rightShoulder = false;
+    bool leftTrigger = false;
+    bool rightTrigger = false;
+
+    for (GCController* controller in [GCController controllers]) {
+        GCExtendedGamepad* pad = controller.extendedGamepad;
+        if (pad == nil) {
+            continue;
+        }
+        leftShoulder = leftShoulder || pad.leftShoulder.pressed;
+        rightShoulder = rightShoulder || pad.rightShoulder.pressed;
+        leftTrigger = leftTrigger || pad.leftTrigger.pressed;
+        rightTrigger = rightTrigger || pad.rightTrigger.pressed;
+    }
+
+    const bool held = leftShoulder && rightShoulder && leftTrigger && rightTrigger;
+
+    // Logged on its edges only, and at all because a wearer who reports "the
+    // recentre does nothing" needs an archive that separates a chord that was
+    // never completed from one that was and did not move the room. The
+    // compositor logs the other half.
+    static std::atomic<int> reported{0};
+    const int now = held ? 1 : 0;
+    if (reported.exchange(now, std::memory_order_acq_rel) != now) {
+        os_log(InputLog(), "recentre chord %{public}s", held ? "held" : "released");
+    }
+    return now;
+}
+
 void SpaghettiPad_InputInit(void) {
     // Nothing to initialise: the engine's own SDL_Init(SDL_INIT_GAMECONTROLLER)
     // and control deck do all of it, and doing it twice here would open the same
@@ -591,27 +833,10 @@ void SpaghettiPad_InputShutdown(void) {
     os_log(InputLog(), "input shutdown is the engine's; nothing to tear down");
 }
 
-void SpaghettiPad_AttachAccessoryTracking(void* arSession) {
-    // The session this will join already exists and is running world tracking;
-    // SpaghettiPad_ARSession() is where Phase 5 gets it. What is missing is the
-    // accessory provider, not the session.
-    (void)arSession;
-    Unimplemented("accessory tracking");
-}
-
-void SpaghettiPad_SetMotionSteeringEnabled(int enabled) {
-    (void)enabled;
-    Unimplemented("motion steering");
-}
-
-void SpaghettiPad_SetMotionSensitivity(float sensitivity) {
-    (void)sensitivity;
-    Unimplemented("motion sensitivity");
-}
-
-void SpaghettiPad_RecenterMotionSteering(void) {
-    Unimplemented("motion recenter");
-}
+// Accessory tracking and the motion-steering entry points live in
+// SpaghettiPadAccessorySteering.mm. They were explicit logged refusals here
+// until the 6DoF pose had somewhere to go; the pose is a wheel now, and the file
+// that reads it owns them.
 
 int SpaghettiPad_ConnectedPortCount(void) {
     // What the control deck has open, reported to this shell from the engine
@@ -627,7 +852,50 @@ int SpaghettiPad_ConnectedPortCount(void) {
 // shell. Defining them here is what makes the engine's calls reach the app.
 
 void SpaghettiPad_SetMenuVisible(int visible) {
-    (void)visible;
+    // Called every frame from Gui::StartDraw, so only the edges are logged.
+    //
+    // This is the shell's only sight of the settings UI: the menu is ImGui's,
+    // drawn into the same surface as the game, and nothing about it reaches
+    // SwiftUI. A wearer who says "I could not open the settings" and a wearer
+    // who opened them and found them unreadable are two different bugs, and
+    // before this pair of lines existed a log archive could not tell them apart.
+    static std::atomic<int> reported{-1};
+    const int now = visible != 0 ? 1 : 0;
+    if (reported.exchange(now, std::memory_order_acq_rel) == now) {
+        return;
+    }
+    os_log(ShellLog(), "menu %{public}s", now != 0 ? "opened" : "closed");
+
+    // Onto the main queue, because the far end of this is a SwiftUI scene and
+    // this runs on the engine thread. Posting an edge rather than a level: the
+    // window opens and closes, it does not need telling every frame that it is
+    // still open.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@SPAGHETTIPAD_MENU_VISIBILITY_NOTIFICATION
+                          object:nil
+                        userInfo:@{ @"visible" : @(now) }];
+    });
+}
+
+namespace {
+// Whether a native settings window is on screen right now. Written by SwiftUI as
+// the window appears and disappears, read by the engine every frame it draws a
+// menu.
+std::atomic<bool> gNativeMenuPresent{false};
+} // namespace
+
+void SpaghettiPad_MenuNativeWindowPresent(int present) {
+    const bool now = present != 0;
+    if (gNativeMenuPresent.exchange(now, std::memory_order_acq_rel) == now) {
+        return;
+    }
+    os_log(ShellLog(), "native settings window %{public}s; the ImGui menu %{public}s",
+           now ? "presented" : "dismissed", now ? "stands down" : "draws again");
+}
+
+int SpaghettiPad_MenuUsesNativeWindow(void) {
+    return gNativeMenuPresent.load(std::memory_order_acquire) ? 1 : 0;
 }
 
 void SpaghettiPad_SetGameplayActive(int active) {

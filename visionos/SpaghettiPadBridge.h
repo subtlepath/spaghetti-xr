@@ -51,8 +51,24 @@ int SpaghettiPad_RuntimeInit(const char* documentsPath, const char* bundlePath);
 // Non-zero once a usable mk64.o2r exists in the app container.
 int SpaghettiPad_GameArchiveReady(void);
 
-// Copies a user-selected ROM into the container and runs Torch extraction.
-// Long-running; call off the main thread. Returns non-zero on success.
+// How many .z64 ROMs the container holds. Answerable before the engine has
+// started, which is when the launch window has to decide whether to offer
+// extraction.
+int SpaghettiPad_ImportedRomCount(void);
+
+// Non-zero when there is a ROM but no game archive: starting the engine now
+// means extracting, which takes minutes.
+int SpaghettiPad_ExtractionPending(void);
+
+// Non-zero when the previous launch started extracting and never produced an
+// archive. Extraction failures inside the engine end in _Exit(1), so this is the
+// only trace they leave. Fixed for the lifetime of the process.
+int SpaghettiPad_PreviousExtractionFailed(void);
+
+// Copies a user-selected ROM into the container. Extraction is the engine's and
+// happens on its first start; this only puts the file where the engine's
+// container scan will find it. Long-running; call off the main thread.
+// Returns non-zero on success.
 int SpaghettiPad_ImportRom(const char* sourcePath);
 
 // Copies a user-selected texture pack into the container's mods/ directory.
@@ -85,6 +101,24 @@ int SpaghettiPad_AlternateAssetsEnabled(void);
 // pack that was about to load, and could not turn it off either.
 void SpaghettiPad_SetAlternateAssetsPreference(int enabled);
 int SpaghettiPad_AlternateAssetsPreference(void);
+
+// What the engine's textures are costing, for the compositor's memory line.
+//
+// Five out-parameters rather than a struct because a struct here would have to
+// be declared identically in libultraship too, and this header already carries
+// one of those. Any may be null. All read atomics the engine publishes once a
+// frame, so a caller on the compositor thread gets the last frame's figures
+// rather than a torn view of this one's, and all answer 0 before the engine
+// starts.
+//
+// `gpuBytes` is what the rendering backend is holding, by the device's own
+// accounting; `cacheBytes` is what the Fast3D texture cache thinks its entries
+// are worth. The two disagreeing is the whole reason this exists: on 2026-08-03
+// a wearer's session reached 8065 MiB of footprint with 126 MiB of headroom left
+// while the cache sat inside its one-gigabyte budget, because evicting an entry
+// did not free the texture behind it.
+void SpaghettiPad_EngineTextureMemory(uint64_t* gpuBytes, uint64_t* gpuTextures, uint64_t* cacheEntries,
+                                      uint64_t* cacheBytes, uint64_t* evictions);
 
 // SpaghettiKart's main(), renamed at compile time via
 // COMPILE_DEFINITIONS main=SpaghettiPad_GameMain so no upstream source
@@ -142,6 +176,16 @@ int SpaghettiPad_EngineRunning(void);
 
 // Called when the immersive space opens or closes.
 void SpaghettiPad_SetImmersiveActive(int active);
+
+// How far the Digital Crown has the world wound open, from 0 (a small portal
+// with the wearer's own room around it) to 1 (fully immersive), or a negative
+// value under an immersion style that has no amount at all.
+//
+// Nothing renders from this. The portal's actual shape reaches the renderer as
+// a stencil mask on each drawable, which is the only description of it that is
+// correct for the frame being drawn. This exists so the log can say what the
+// wearer was looking through when they saw whatever they are reporting.
+void SpaghettiPad_SetImmersionAmount(double amount);
 
 // ---------------------------------------------------------- render handover
 //
@@ -222,16 +266,38 @@ void SpaghettiPad_InputInit(void);
 void SpaghettiPad_InputShutdown(void);
 
 // ARKit permits a single ar_session_t. The compositor owns it and
-// SpaghettiPad_ARSession() hands it out; the input layer adds its
-// accessory-tracking provider to that same session rather than creating a
-// second one.
+// SpaghettiPad_ARSession() hands it out; the accessory-tracking provider joins
+// that same session rather than creating a second one, and does so inside
+// WorldTracking::Start() before the session is ever run.
+//
+// What is left for this entry point is the part that cannot happen that early:
+// finding the controllers, which connect and disconnect as a wearer switches
+// them on. The `arSession` argument is vestigial — the provider is already in
+// the session by the time anything can call this — and is ignored.
 void SpaghettiPad_AttachAccessoryTracking(void* arSession);
 
-// PS VR2 Sense motion steering. Sensitivity and the filter reuse the
-// physically-tuned constants from the retired tilt path.
+// PS VR2 Sense 6DoF steering: the two controllers held like a wheel, steering by
+// the angle of the line between the hands rather than by either hand alone.
+// Needs visionOS 27, where GameController reports the pair as two spatial
+// accessories; below that they are only ever the one combined gamepad and these
+// are no-ops that say so.
+//
+// The filter and the deadzone are the physically-tuned constants from the
+// retired tilt path. Full lock is **not** — a wrist rolling a phone and a pair
+// of arms turning a wheel do not want the same travel — and the number in
+// SpaghettiPadAccessorySteering.mm is an untried guess with a slider around it.
 void SpaghettiPad_SetMotionSteeringEnabled(int enabled);
 void SpaghettiPad_SetMotionSensitivity(float sensitivity);
 void SpaghettiPad_RecenterMotionSteering(void);
+
+// The steering axis to apply to port 0's stick X, in the N64's own ±85 units.
+//
+// Returns 0 — leaving `outStickX` untouched — whenever steering should not be
+// applied at all: switched off, unsupported, one of the pair not held or not
+// tracked, or the last sample too old to still be true. The engine's control
+// deck calls this once per pad read and lets a real thumbstick win, so a wearer
+// who lifts a thumb to the stick keeps steering with it.
+int SpaghettiPad_MotionSteeringAxis(int* outStickX);
 
 // Number of controllers currently routed to N64 ports (0-4).
 int SpaghettiPad_ConnectedPortCount(void);
@@ -250,6 +316,87 @@ void SpaghettiPad_InputDevicesChanged(int count, const char* names);
 // actually reaches the game rather than merely reaching the app. Declared weak
 // in libultraship's control deck so it links without a shell.
 void SpaghettiPad_InputFirstActivity(int port, unsigned buttons, int stickX, int stickY);
+
+// Whether the recentre chord — both shoulders and both triggers — is held right
+// now, merged across every controller the GameController framework holds. Read
+// by the compositor, which owns the frame clock the hold is timed against and is
+// the only thing that can act on it: recentring is moving the room, and the room
+// is the compositor's.
+//
+// This reads the framework's controllers and installs nothing on them. The
+// engine's control deck, through SDL's MFi driver, owns their
+// valueChangedHandler, and replacing it would take the game's input with it.
+int SpaghettiPad_InputRecentreChordHeld(void);
+
+// ------------------------------------------------------------- settings menu
+//
+// The engine's settings menu, as data, so the shell can draw it as a native
+// SwiftUI window instead of the ImGui one — see
+// SpaghettiKart:src/port/ui/SpaghettiPadMenuBridge.cpp, which is where all of
+// these are defined and where the threading rules are written down.
+//
+// The short version of those rules: nothing below touches the menu tree, a
+// CVar, or a widget's callback on the calling thread. Reads copy the last
+// snapshot the engine published; writes are queued and applied at the top of the
+// next game frame. So every one of these is safe from the main actor, and none
+// of them is synchronous with the change it asks for.
+
+// Whether the engine should keep publishing snapshots. Off by default: a
+// snapshot costs a tree walk and a JSON encode per frame, and there is no
+// reason to pay it while no window is open.
+void SpaghettiPad_MenuSetPolling(int wanted);
+
+// Bumped whenever the menu's *shape* changes, as opposed to its values. The
+// shell re-reads the structure when this moves and only the values otherwise.
+uint32_t SpaghettiPad_MenuGeneration(void);
+
+// The menu's shape and its current values, as two JSON documents. Both follow
+// the snprintf convention: they return the length the document needs, write at
+// most `capacity - 1` bytes plus a terminator, and may be called with a null
+// buffer to size a buffer first. Both return 0 before the engine has published
+// anything, which is every call before the first frame after polling is turned
+// on.
+int SpaghettiPad_MenuStructureJSON(char* out, int capacity);
+int SpaghettiPad_MenuValuesJSON(char* out, int capacity);
+
+// A wearer changed something. `id` is the widget's id from the structure
+// document. Queued, not applied: the engine picks these up at the top of its
+// next frame and runs the widget's own callback there.
+void SpaghettiPad_MenuSetInt(int id, int value);
+void SpaghettiPad_MenuSetFloat(int id, float value);
+void SpaghettiPad_MenuSetColor(int id, uint32_t rgba);
+void SpaghettiPad_MenuActivate(int id);
+
+// Opens or closes the menu from the shell's side, for when a wearer closes the
+// native window with its own close button. The engine keeps blocking game input
+// for as long as the menu is visible, so failing to say this would leave a kart
+// that will not drive and no window to explain why.
+void SpaghettiPad_MenuRequestVisible(int visible);
+
+// Whether the engine should skip drawing its ImGui menu because the shell is
+// showing a native window instead. Defined by the shell, declared weak in the
+// engine's Menu.cpp so every other platform keeps the ImGui menu.
+//
+// This is the switch between the two front ends, and it is deliberately the only
+// one: the menu still becomes *visible* either way, with the same input blocking
+// and the same visibility CVar, so turning it off restores the ImGui menu with
+// no other state to unwind.
+//
+// It answers yes only while a native window is actually on screen, which is the
+// failsafe: if SwiftUI never presents the window — and on a platform this new,
+// "never presents" is a real outcome — the ImGui menu keeps drawing and a wearer
+// is never left with settings they cannot reach.
+int SpaghettiPad_MenuUsesNativeWindow(void);
+
+// Called by the settings window as it appears and disappears. The only thing
+// that makes the answer above yes.
+void SpaghettiPad_MenuNativeWindowPresent(int present);
+
+// Posted to the default NSNotificationCenter on the main queue whenever the
+// engine's menu visibility changes, carrying an NSNumber `visible` in userInfo.
+// This is how the pad's menu button reaches SwiftUI: the engine has no idea a
+// window exists, and the shell will not reach into a scene from a game thread.
+#define SPAGHETTIPAD_MENU_VISIBILITY_NOTIFICATION "SpaghettiPadMenuVisibilityChanged"
 
 // --------------------------------------------------- engine -> shell (weak)
 //

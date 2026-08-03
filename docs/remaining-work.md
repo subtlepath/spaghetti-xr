@@ -54,10 +54,10 @@ recorded evidence stands.
 | 2 | Compositor Services skeleton | **Complete 2026-08-01**, both halves; a wearer confirmed amber/cyan borders, one/two ticks and per-eye reticle disparity on an Apple Vision Pro | Immersive space opens and renders a per-eye test pattern (device proves both eyes differ) |
 | 3 | Engine on the compositor | **Complete 2026-08-01**, both halves; the device half ran 6 min 15 s at 89–90 Hz with all 33,601 drawables anchored, which the owner accepted in place of ten minutes | Title screen on a floating screen, sustained — ten minutes as written, **six accepted by the owner on 2026-08-01** |
 | 4 | Stereo and immersive environment | **Complete 2026-08-01**: separation measured on device (67.0–70.7 mm across six sessions), world-locking demonstrated, and the wearer drove a comfortable full race and won it. The floor is still misplaced — recorded as a known defect, not as an open gate | Measured on-device stereo separation and a comfortable full race |
-| 5 | Input | **PS VR2 Sense half done 2026-08-01** on device — they enumerate as one combined gamepad and drove a race, buttons and sticks only. Open: **DualSense** (never connected), port order across reconnects, and 6DoF accessory tracking, still a logged refusal | DualSense and PS VR2 Sense races, stable port order across reconnects |
-| 6 | Settings UI | Not started | Every settings page operable with a controller alone |
-| 7 | ROM and texture-pack import | **Import and switch built 2026-08-01; Simulator half passed, device half never run.** The MK64 Reloaded 4K pack (1.18 GiB) imported, loaded as `MK64-Reloaded-SK v2026.0.0`, and rendered enhanced textures in the Simulator. Open: in-app ROM extraction has never been exercised — the Simulator archive was built by Torch on the host | Clean-container ROM import, extraction, and a texture-pack switch |
-| 8 | Audit, packaging, CI, docs | Not started | CI green, audited ROM-free unsigned visionOS artifact with its SHA-256 |
+| 5 | Input | **PS VR2 Sense half done 2026-08-01** on device — they enumerate as one combined gamepad and drove a race, buttons and sticks only. **6DoF steering written 2026-08-02 and never run**: accessory tracking is no longer a refusal, but the Simulator can exercise none of it. Open: **DualSense** (never connected), port order across reconnects, and every claim about 6DoF | DualSense and PS VR2 Sense races, stable port order across reconnects |
+| 6 | Settings UI | **Rebuilt native 2026-08-02; device half never run.** The menu is now a SwiftUI window driven by the engine's own published widget tree rather than ImGui drawn into the game's framebuffer — which is the answer to the legibility question this row used to carry, since the text is now the system's at the system's size. The ImGui menu remains as the fallback and for the Developer windows. Open: the whole thing on a headset | Every settings page operable with a controller alone |
+| 7 | ROM and texture-pack import | **Simulator half complete 2026-08-02; device half never run.** In-app extraction now works and was exercised from a clean container: 438 s, peak RSS 1085 MiB, 32,447 entries. The MK64 Reloaded 4K pack (1.18 GiB) imports, loads as `MK64-Reloaded-SK v2026.0.0`, and renders. Open: the whole gate on a headset | Clean-container ROM import, extraction, and a texture-pack switch |
+| 8 | Audit, packaging, CI, docs | **Packaging, audit and docs done 2026-08-02; CI written and never run.** `scripts/package-visionos.sh` produces an audited ROM-free unsigned artifact carrying its own build provenance, and refuses a signed app by default. The README and release checklist are rewritten for this lane. Open: the hosted workflow has never executed on a runner | CI green, audited ROM-free unsigned visionOS artifact with its SHA-256 |
 | 9 | Mode B, 6DoF (experimental) | **Written 2026-08-01; nothing about it is verified.** The engine renders stereo, the compositor feeds it per-eye geometry, and it builds and replays clean. Every claim about what it *looks* like is unmade: the Simulator reports one view, so Mode B declines there by design and only its fallback has been run | One track drivable in 6DoF with a legible HUD |
 
 Stereo separation, immersion, comfort, and all PS VR2 Sense behaviour are
@@ -120,13 +120,31 @@ about what it looks like is still unmade: a Simulator reports one view, Mode B
 declines there by design, and only its Mode A fallback has been run. It needs the
 same headset everything else here needs.
 
-**Phase 7, ROM and texture-pack import**, is now half closed by the same work: the
-MK64 Reloaded 4K pack imports, loads, and renders (Simulator), while in-app ROM
-extraction remains written and unexercised. Phase 8's audit, packaging and CI work
-is likewise unblocked.
+**Phase 7, ROM and texture-pack import**, is now closed on the Simulator: as of
+2026-08-02 in-app extraction runs — and had to be built to, because it was
+blocked by three defects the never-having-run had hidden. Phase 8's packaging,
+audit and docs are done; its CI is written and unrun. **Phase 6, the settings
+UI**, is closed on the Simulator as of 2026-08-02, and was likewise not merely
+unwritten: the menu could not be opened on this platform by any input at all.
+See the 2026-08-02 entries below.
 
-Everything now open on the visionOS lane besides Phases 7 and 8 is waiting on an
-**Apple Vision Pro**, not on work:
+**The newest open item is not a phase.** On 2026-08-02 a wearer's Mode B race
+was killed at 5 min 50 s by `JETSAM_REASON_MEMORY_PERPROCESSLIMIT` against a
+5120 MiB limit, on stock assets — no texture pack was rendering. The compositor
+was given a memory report every 600 frames so the next wear would produce a
+growth curve instead of only a reason, and on 2026-08-03 it did: 8065.9 MiB of
+footprint with 126.1 MiB of headroom left, five minutes into a session with the
+4K pack on. **A cause was found in that curve and fixed** — an evicted texture
+cache entry left its GPU texture allocated, so the cache's byte budget bounded
+the entries and nothing bounded the memory; see the 2026-08-03 entry below. It
+is fixed in the build and **unmeasured on a headset**, and the report now carries
+the two numbers that disagreed, so the next wear either confirms it or names
+something else. Until a sustained wear says so, **every phase whose device half
+needs a long session is still time-limited by this** — which is most of them,
+including Phase 3's ten-minute stability run and Phase 6's device half.
+
+Everything now open on the visionOS lane besides Phases 6, 7 and 8 is waiting on
+an **Apple Vision Pro**, not on work:
 
 - **Phase 2's device half** and **Phase 3's device half** were blocked on the
   missing ARKit device anchor. That blocker is gone — see the 2026-08-01 Phase 4
@@ -169,9 +187,13 @@ Boundary:
   both eyes see the same flat picture, differing only in where that picture
   sits. That is the intended Mode A, and 6DoF remains Phase 9.
 - Import entry points in `visionos/SpaghettiPadBridge.h` remain explicit logged
-  refusals, and so does `SpaghettiPad_AttachAccessoryTracking`. The **input**
-  entry points no longer are — but nothing in the shell routes input and nothing
-  needs to, because the engine's own control deck does. **Audio works** — the
+  refusals. The **input** entry points no longer are — nothing in the shell
+  routes the ordinary pad and nothing needs to, because the engine's own control
+  deck does, and `SpaghettiPad_AttachAccessoryTracking` and the motion-steering
+  entry points are now implemented in
+  `visionos/SpaghettiPadAccessorySteering.mm`. **Implemented is not verified**:
+  6DoF steering has never run, because the Simulator has neither spatial
+  accessories nor accessory tracking. **Audio works** — the
   SDL/CoreAudio path is live and
   a wearer has heard it on device; the earlier "no audio" boundary was an
   untested assumption about `MA_NO_DEVICE_IO`, which disables miniaudio only.
@@ -194,6 +216,946 @@ closed and are not claimed. The recorded boundary at the time of the pivot:
   behavior.
 
 ## Evidence log
+
+### 2026-08-03 (build + Simulator) — The texture cache's budget was never the process's: an evicted entry kept its GPU texture, and a thousand slots of a 4K pack is eight gigabytes
+
+**What a wearer's log said.** Loading Frappe Snowland, 28,201 frames in — five
+and a quarter minutes at 90 Hz:
+
+```
+memory: 8065.9 MiB footprint, 126.1 MiB before the limit, 7893.3 MiB consumed since the first of these
+```
+
+Everything else in that snapshot was healthy: 28,201 drawables anchored and none
+missed, 56,180 eye encodes in Mode B, no command buffer failures. The first
+sample of the session had ~8019 MiB of headroom and the last had 126, so the
+process took nearly the whole of an eight-gigabyte limit in five minutes and was
+about to be killed for it.
+
+**Whether a texture pack was loaded in that session is not recorded anywhere in
+it** — the mechanism below is the reason to think so, not evidence of it, and
+that inference is exactly what the new `textures:` line exists to stop having to
+make. It also means **this does not explain the 2026-08-02 kill**, which a wearer
+confirmed happened with no pack rendering: at stock N64 texture sizes the leak
+below is worth single-digit megabytes. That one is still open and still
+unprofiled.
+
+**The byte budget added on 2026-08-02 was working. It was bounding the wrong
+thing.** That budget caps what the Fast3D texture cache's *entries* are worth and
+evicts from the LRU end past 1 GiB, and it does evict. What it never touched was
+the texture behind the entry:
+
+- `Interpreter::EvictTextureCacheLru` dropped the entry and pushed its texture id
+  onto `free_texture_ids` for reuse.
+- A texture id is an index into the Metal backend's own `mTextures`, and
+  `GfxRenderingAPIMetal::DeleteTexture` was **an empty function body**. Nothing
+  called it either; upstream never has.
+- So the `MTL::Texture` in that slot stayed allocated until an upload of
+  *different dimensions* happened to land in the same slot —
+  `GfxRenderingAPIMetal::UploadTexture` releases the old one only when the size
+  changes.
+
+Live texture memory was therefore the high-water mark of *the largest texture
+ever placed in each slot*, across a pool that grows to `TEXTURE_CACHE_MAX_SIZE`
+= 1024. At N64 sizes that is a few megabytes and invisible, which is why it
+survived upstream. At MK64 Reloaded's sizes one slot is worth up to 64 MiB, and
+1024 slots averaging 7–8 MiB is the 8 GiB in the log. The cache reported itself
+inside its budget the entire way, because from where the cache stands it was.
+
+**What changed.**
+
+- `GfxRenderingAPIMetal::DeleteTexture` frees the slot's colour texture, its MSAA
+  texture and its sampler, and forgets the framebuffer bind-caches that name them
+  by address — those skip a redundant bind by comparing pointers, and the
+  allocator is free to hand a released address straight to the next texture. It
+  refuses ids that belong to a framebuffer, which are not the cache's to free.
+- The interpreter now calls it. Evicted ids go to a new
+  `evicted_texture_ids` list and are freed by `ReleaseEvictedTextures` at the top
+  of the next frame, not at the point of eviction: eviction runs mid-draw from
+  `RecordTextureUpload`, with an encoder still open, and Metal holds its own
+  reference to anything a committed command buffer names.
+- Every route that drops an entry now does the same three things. `TextureCacheDelete`
+  did none of them: it left the bytes booked against the budget (which spends the
+  budget evicting entries that are still wanted), left the decoded resource
+  loaded, and recycled the id. `TextureCacheClear` released neither resources nor
+  textures. Both now match eviction, and `Destroy` releases what it clears —
+  which matters because the engine can be stopped and started inside one process.
+- `InvalidateBoundTextures` tells the draw path its bindings are stale whenever
+  entries go away. The draw path re-imports a tile only when the RDP says that
+  tile changed, so a binding could outlive its cache entry; that used to mean
+  stale pixels, and with the texture actually freed it would have meant sampling
+  an empty slot.
+- The compositor's every-600-frames report gains the line that would have named
+  this in one wear:
+
+  ```
+  textures: N MiB live on the GPU in N, N MiB billed to N cache entries, N evicted so far
+  ```
+
+  The GPU figure is `MTL::Resource::allocatedSize` summed over every texture the
+  backend holds — the device's own accounting, not an estimate of it — and it is
+  precisely the number that disagreed with the cache's. `SpaghettiPad_EngineTextureMemory`
+  carries it across the shell boundary; the counters are atomics published once a
+  frame, so the compositor thread reads last frame's figures rather than a torn
+  view of this one's.
+
+**What the Simulator showed.** visionOS 27 Simulator, the MK64 Reloaded 4K pack
+in the container's `mods/` with `gEnhancements.Mods.AlternateAssets` on, Mode A
+because the Simulator reports one view. The pack loads, the cache fills, and then
+the new line holds still:
+
+```
+11:38:38  memory: 1069.2 MiB   textures: 1068.9 MiB live on the GPU in 1005, 1023.8 MiB billed to  993 entries,  270 evicted
+11:39:38  memory:  659.3 MiB   textures: 1063.8 MiB live on the GPU in  922, 1023.7 MiB billed to  915 entries, 3458 evicted
+11:40:28  memory:  552.6 MiB   textures: 1063.4 MiB live on the GPU in 1001, 1023.3 MiB billed to  994 entries, 4887 evicted
+```
+
+**4,617 evictions in under two minutes and the GPU figure moved by −5.5 MiB.**
+Before this change every one of those evictions left its texture allocated. The
+~40 MiB by which the GPU figure sits above the cache's is the framebuffer, its
+depth target and the pattern texture, which the cache does not bill. No command
+buffer failed.
+
+Two things that result is *not*. The Simulator's Metal answers 0 for
+`allocatedSize`, so the figure above is the geometric fallback rather than the
+device's own accounting — the first run of this counter reported 1,005 live
+textures worth 0.0 MiB, which is how that was found. And the Simulator's texture
+memory is host GPU memory, which is why the footprint sits *below* the texture
+tally there; on a headset's unified memory it is the same pool. This run proves
+the release path runs, that the tally is bounded, and that eviction under a
+saturated budget does not fault. It measures nothing about a headset.
+
+**One thing found while regenerating the patches.** `Spaghettify.entitlements` —
+which carries `com.apple.developer.kernel.increased-memory-limit`, and therefore
+the whole difference between a 5120 MiB limit and the ~8 GiB one the log above is
+measured against — existed only in the working tree and in a stale Xcode index.
+It was in no maintained patch, so a clean replay produced no such file. It is now
+a new-file hunk in `patches/spaghettikart-visionos.patch`. Note that nothing in
+the maintained CMake references it: the `Debug-xros` build that picked it up did
+so through a generated project, so **the raised limit is not yet reproducible
+from `scripts/build-visionos.sh` alone** and is recorded here as an open thread,
+not as a fixed one.
+
+**Boundary.** Built for device and Simulator, audited, patches regenerated and
+reverse-checked. **Not worn.** No measurement of the fixed footprint exists, and
+none can come from a Simulator: this is a texture-pack-under-load claim, and the
+Vision Pro Simulator renders one eye and no headset memory limit. That the leak
+above is *the* cause of the 8065 MiB rather than *a* cause is inference — from
+the code path and from the arithmetic matching — and the `textures:` line is
+exactly what would confirm or refute it on the next wear. If the GPU figure now
+tracks the cache figure and both hold flat across a promo loop, the budget is the
+process's budget; if the footprint still climbs while both hold, something else
+is allocating and this entry names the wrong culprit.
+
+### 2026-08-03 (build + Simulator) — Progressive immersion: the Digital Crown dials the world open, which cost the `dedicated` layout and cannot be run on a Simulator at all
+
+**What changed.** The immersive space opens under
+`.progressive(0.35...1.0, initialAmount: 1.0)` on a headset, so the Digital
+Crown winds the game between a window in the wearer's room and the fully
+immersive space this app was before. At the top of the dial it is the space it
+has always been, so a wearer who never touches the Crown loses nothing.
+
+**The layout decision from 2026-08-01 is reversed, and had to be.** Progressive
+immersion draws its portal through a `cp_drawable_render_context_t`, and a
+render context accepts no layout but `layered` on a drawable with more than one
+view. `dedicated` was chosen precisely to avoid `layered`, because under
+`layered` the headset returns one rasterization rate map whose per-eye layer is
+selected by a `render_target_array_index` these shaders did not emit, and the
+wearer saw a clean grid in the left eye and a warped one in the right. That exit
+is now closed, so the renderer does what that entry said it declined to do:
+
+- Every vertex program — pattern, screen, eye, sky, floor — takes a
+  `view_layer` uniform at buffer index 3 and emits it as
+  `[[render_target_array_index]]`. Not vertex amplification: the eye is still a
+  separate draw, so Mode B can still bind a different texture per eye.
+- `EncodeViews` collapses to one layered pass over the whole texture array,
+  with the viewport and layer index set per view inside it. The per-view-pass
+  shape is kept for a single-view drawable and any dedicated/shared fallback.
+- `PublishViews` now asks the rate map for the layer belonging to the view
+  rather than layer 0, which under one map with two layers was the same answer
+  only by the coincidence that both eyes are the same size.
+
+**Two defects were found by running rather than by reading, and both were in
+this change.**
+
+- **The render context is mandatory, not an optimisation.** It was written as
+  the thing that draws the stencil mask and gated, with the mask, on a stencil
+  format. The Simulator offers no render-context stencil format, so no context
+  was added, and `cp_drawable_encode_present` aborted the process on the first
+  frame: `BUG IN CLIENT: cannot present drawable: need to use drawable render
+  context when supporting progressive style.` The two are now separate — the
+  context is added whenever the layer can give one, and the stencil mask is an
+  optimisation layered on top of it that saves shading the pixels outside the
+  portal.
+- **The layered layout does not imply an array to index.** A pass declared
+  `renderTargetArrayLength` from the view count instead of from the texture.
+  This turned out not to be the Simulator's problem — its texture is
+  `MTLTextureType2DArray` with one slice, logged now as `type 3, 1 slice(s)` —
+  but the pass and the shader now both follow the texture, because that is what
+  Metal executes against.
+- **The render context is claimed on the command buffer, so it must be claimed
+  before an encoder is open on it.** Found by a wearer, not here.
+  `cp_drawable_add_render_context` takes the command buffer rather than the
+  encoder because it encodes on it, and it was being called from inside the
+  encoder's own setup. A headset answered:
+
+  ```
+  -[IOGPUMetalCommandBuffer encodeWaitForEvent:value:timeout:], line 511:
+  error 'encodeWaitForEvent:value: with uncommitted encoder'
+  ```
+
+  The order is now Apple's: add the context, open the encoder, draw the mask
+  into it, end through the context. **The Simulator never reproduced this and
+  cannot**, which is why it survived to a headset: under `.full` the render
+  context has no portal to draw and encodes no wait, so the same wrong order ran
+  1801 clean frames there. A Simulator run is evidence that this lane still
+  works, not that this defect is fixed.
+- **The mask draw is a foreign draw on this renderer's encoder, and it leaves
+  state behind.** Also found by a wearer. The compositor masks both eyes at once
+  through vertex amplification and leaves the encoder amplifying two views; this
+  renderer amplifies nothing, because the eye is a separate draw and that is
+  what lets Mode B bind a different texture to each. So its pipelines allow a
+  count of one, and the first draw after the mask asserted outright:
+
+  ```
+  Vertex Amplification Count (2) must be between (inclusive) 1 and the maximum
+  vertex amplification count specified in the pipeline state (1)
+  ```
+
+  `draw_mask_on_stencil_attachment` documents that it modifies the depth-stencil
+  state, the viewports, the vertex amplification count and some texture
+  bindings, and says to set them back. Three of the four were already being set
+  per view by `EncodeViewContent` and had hidden the omission of the fourth. The
+  amplification count is now restored where the mask is drawn, and the cull mode
+  is set explicitly beside it — not for a failure that has been seen, but
+  because "no cull mode is set anywhere in this file" stopped being true the
+  moment a draw this file did not encode ran on its encoder, and the sky is a
+  box drawn from the inside.
+
+**All three defects were device-only, and for one reason.** Each lives in the
+code that runs only when a portal has a real shape to cut, and the Simulator
+offers no render-context stencil format at all — so the entire masked branch is
+unreachable there. The Simulator can prove this lane still renders. It cannot
+prove anything about progressive immersion, and it did not.
+
+**The Vision Pro Simulator cannot run progressive immersion, and this was
+isolated rather than assumed.** A progressive-style frame fails on its GPU with
+`MTLCommandBufferErrorDomain error 1`, takes the simulator's Metal service down
+with it, and every later Metal call in the process aborts through XPC —
+`MTLSimulator_encountered_XPC_error` on the engine thread, allocating its next
+frame. Metal API validation is enabled and silent throughout: the encoding is
+legal, the execution is not. The identical build under `.full`, with the same
+layered layout, the same array index in every vertex program and the same render
+context in the loop, presented **1801 frames at 60 Hz with 0 command buffer
+failures**. The only difference between the run that dies on frame 1 and the run
+that does not is the immersion style. Consistent with the Simulator offering no
+render-context stencil format at all, and with CompositorServices' own headers
+saying of this API that it "is not available on simulator".
+
+So `SpaghettiPadApp.initialImmersionStyle` is `.full` under
+`#if targetEnvironment(simulator)` and progressive only on a headset. The
+Simulator lane keeps the fully immersive space every earlier result here was
+collected under, and the progressive style joins stereo, world-locking and
+comfort as a device claim.
+
+**What was run.** `scripts/build-visionos.sh --device` completed with
+`** BUILD SUCCEEDED **` and passed the audit; the Release arm64 xros executable
+SHA-256 is
+`7fede0793c82b43c2913ad2ad8b71992ad1937d798ed2111e240a97761471033`.
+`scripts/build-visionos.sh --simulator` likewise, and the Simulator ran **1801
+frames at 60 Hz, 1784 of them showing the engine, 0 command buffer failures,
+1801 drawn through a portal** — which exercises the new single-pass layered
+encoder and the render context, under `.full`.
+
+**Boundary — everything about the Crown itself is unclaimed.** No headset has
+run this. The portal's shape, its edge fade, whether it is identical in both
+eyes, whether the foveation warp that `dedicated` was chosen to avoid stays away
+now that the array index is emitted, and whether dialling down mid-race is
+comfortable are all unmeasured, and none of them can be measured on a Simulator
+that renders one view and refuses the style outright. The stencil mask has
+**never executed anywhere** — the Simulator offers no format for it, so only a
+headset will run that branch. `docs/VISIONOS_DEVICE_ACCEPTANCE.md` gains the
+procedure. One design question is left open there rather than answered here:
+Mode A draws a synthetic sky and floor so head motion has something to register
+against, and at a low immersion amount the wearer's real room is already doing
+that job.
+
+### 2026-08-02 (build only) — The settings menu is native: the engine publishes its widget tree and SwiftUI draws it
+
+**What changed.** The 119-widget settings menu is a real visionOS window — `Form`,
+`NavigationSplitView`, system controls, system type — instead of ImGui drawn into
+the game's own framebuffer and read at two metres.
+
+**Why it is a bridge and not a rewrite.** Upstream already declares the menu:
+`PortMenu::AddSettings()` and its siblings build a tree of `WidgetInfo`, each
+carrying a label, a CVar, a type, an options struct and a tooltip. Hand-writing
+119 SwiftUI controls against that would have produced a second source of truth
+that goes stale the first time upstream adds a checkbox — and this project tracks
+a pinned upstream it does not control. So the tree is **walked and published as
+JSON**, and the Swift side is a renderer for whatever it finds. There is no
+switch on a *setting* anywhere in the Swift; only on a widget's kind. A setting
+added upstream appears without a line changing.
+
+**Threading, which was the whole of the difficulty.** The tree, the CVars and the
+widgets' own callbacks are engine-thread state; SwiftUI is the main actor.
+Nothing crosses that line directly. The engine builds a snapshot at the top of a
+frame and publishes it under a mutex; the shell copies the last published one and
+never blocks on a frame. The shell queues changes; the engine drains them at the
+top of the next frame and runs each widget's callback **there**, which is the
+thread ImGui would have run it on. Both halves follow `ApplyPendingReset`, which
+this project already used for exactly this shape of problem. A consequence worth
+stating: a toggle does not change its own value. It asks, and the next poll — 66
+ms — shows the answer.
+
+**The failsafe, and why it is shaped this way.** `Menu::Draw` skips its ImGui
+body only while `SpaghettiPad_MenuUsesNativeWindow()` says a native window is
+*actually on screen* — set by the window's own `onAppear`, not by the request to
+open it. If SwiftUI never presents the window, ImGui keeps drawing and a wearer
+is never locked out of their settings. The menu still becomes *visible* either
+way, with the same input blocking and the same visibility CVar, so the two front
+ends are interchangeable with no state to unwind.
+
+**What stays ImGui, deliberately.** The five Developer windows — Gfx debugger,
+stats, console, scene visibility, freecam — are ImGui windows that draw their own
+contents; the native menu opens them exactly as the ImGui menu did, and the
+control shows whether each is open. The resolution editor draws raw ImGui and is
+skipped rather than half-rendered. A widget type this build does not know how to
+draw is **named on screen** rather than dropped, because a silent omission is how
+a settings window quietly loses a feature upstream added.
+
+**Boundary.** Built and never worn. The Simulator builds and links it and the
+symbols are in the binary; whether a `NavigationSplitView` presents correctly
+alongside a `.full` immersive space, whether the window is reachable and readable
+mid-race, and whether closing it actually unblocks game input are all first-run
+questions on a headset. The 66 ms poll and the JSON encode per frame are
+untested against a running game's frame budget — polling is off unless a window
+is open, which bounds the risk but does not measure it.
+
+### 2026-08-02 (build only) — 6DoF steering: the Sense pair's pose finally has somewhere to go, and not one line of it has run
+
+**What changed.** `SpaghettiPad_AttachAccessoryTracking` and the three
+motion-steering entry points stop being explicit logged refusals and become
+`visionos/SpaghettiPadAccessorySteering.mm`. Holding both Sense controllers where
+a steering wheel would be steers the kart.
+
+**The measurement, and why it is that one.** Not the raw height difference
+between the hands, which was the obvious reading of the idea and is wrong: the
+same 10 cm is a gentle lean with the hands wide and a hard turn with them close.
+What is measured is the **angle** above horizontal of the line from the left grip
+to the right grip — `asin(Δy / separation)` — which is the same number a wheel's
+rim reports and is independent of grip width. It is also independent of which way
+the wearer is facing, because `y` is gravity in ARKit's world origin and
+chirality names the hands rather than the room. Positive is right-hand-high,
+which is a wheel turned anticlockwise, which is a left turn, which is negative on
+an N64 stick; the sign lives in one place.
+
+**Two paths, and only one of them was ever the problem.** GameController merges
+the pair into one combined gamepad — that is the 2026-08-01 finding and it has
+not changed. ARKit's accessory tracking is a separate path that reports each
+controller individually with a chirality, through
+`GCSpatialAccessory.spatialAccessories`. That API is **visionOS 27**, as is
+`ar_accessory_tracking_provider_update_accessories`, so the whole feature is
+gated on 27 and says so on 26 rather than half-working.
+
+**Where it joins, and the risk that shaped the design.** ARKit permits one
+`ar_session_t`, and the one this app has is the session every drawable's device
+anchor comes from — lose it and the headset renders nothing. So the accessory
+provider is composed into the provider set **before** `ar_session_run`, rather
+than re-running a live session when a wearer flips the setting. It is declined
+outright, with a log line, if ARKit reports a required authorization this bundle
+declares no usage string for, because a missing usage description is a process
+kill rather than a polite failure. The session state-change handler now names
+which provider changed, which it did not need to when there was only one.
+
+**Where the axis lands.** `ControlDeck::WriteToOSContPad`, after every controller
+has been read, writing port 0's `stick_x` in the N64's own ±85 units — not as a
+device, because there is no SDL joystick behind it and nothing for the Input
+Editor to bind. A real thumbstick past ±8 takes it straight back.
+
+**Tuning, and what is honestly inherited.** The retired iOS tilt path's filter
+and deadzone carry over; its full-lock angle does not, and the header that
+promised all three has been corrected. 0.45 rad was tuned for a wrist rolling a
+phone, and the same 26° across a two-handed wheel is inside the noise of
+unsupported arms. Full lock is 0.70 rad (40°) with a 0.5x–2.0x slider around it.
+The filter carries over as its **time constant** rather than its alpha: 0.18 per
+sample only means what it meant at the 60 Hz CoreMotion was polled at, and
+accessory tracking promises no rate, so alpha is recovered from the measured
+interval each update.
+
+**Boundary — and it is the whole of this entry's weight.** **Nothing here has
+run.** The Vision Pro Simulator reports no spatial accessories and
+`ar_accessory_tracking_provider_is_supported()` is false there, so this is the
+first feature in this lane with no Simulator half at all: it compiles for
+xros and xrsimulator, it links, the symbols are in the binary, and that is the
+entire claim. Unverified and first-run on hardware: that a session carrying two
+providers still renders; that the pair arrives as **two** accessories rather than
+one, which is the assumption the whole scheme rests on; the sign; the 40°; the
+feel; and whether the grip location resolves at all. `docs/VISIONOS_DEVICE_ACCEPTANCE.md`
+carries the acceptance steps in the order they should be tried.
+
+### 2026-08-02 (seventh wear) — The HUD panel was exactly where it was told to go, and what was wrong was the pose it was told to go in front of
+
+**The report.** The game's HUD and menu screens show with the **top-right corner
+of the HUD at the wearer's visual centre**, so the whole 2D layer sits down and
+to the left of where they are looking. Asked whether it follows their head or
+stays put in the room, the wearer answered: **it stays put in the room.**
+
+**That answer is the diagnosis, and it clears the projection.** The panel is a
+fixed object in the recentre frame, and `BeginStereoEye` finds it each frame by
+projecting its centre through that eye's own pose — so a panel that stays put
+while the head turns is a panel whose placement is working exactly as written.
+The arithmetic was re-derived against `BuildEyeFrustum` and `EyeTangents` and
+inverts it exactly: NDC x is `(x/depth − ½(R−L)) / halfWidth`, which is the
+frustum read backwards, and the same for y. Nothing in the panel maths is wrong.
+
+**What is wrong is one line in the compositor: `if (!roomPlaced_ && pose.state
+== tracked)`.** The room — Mode A's screen, Mode B's recentre frame, the floor
+and the sky — was hung off **the first fully tracked pose that arrived**, which
+is whatever direction the wearer's head happened to be pointing in the instant
+the immersive space finished opening. Half the HUD panel is 21.8 degrees wide
+and 16.7 degrees tall (0.88 m and 0.66 m at 2.2 m), so a head that settles about
+that far right of, and above, the placement pose puts the panel's top-right
+corner precisely at the visual centre. The wearer's description is that geometry
+read back to us.
+
+Mode A hangs off the same pose and the same instant, deliberately, so the two
+modes agree — which means this has always been a Mode A defect too, and was
+simply less visible on a 1.6 m screen with no HUD to be off-centre *within*.
+
+**Changed, first half: the room waits for a still head.** From the first tracked
+pose the compositor watches the two quantities a placement actually reads —
+where the head is, and which way it faces along the floor — and places the room
+once both have held to within 3 cm and 3 degrees for half a second. Pitch and
+roll are not watched because `PlaceScreen` and `PlaceRecentre` drop them: a
+wearer who settles while looking down at a pair of controllers still gets a
+level room facing the way they are facing. If the head never holds still, the
+room is placed anyway after four seconds and says so in the log, because Mode B
+publishes no views until a room exists and an unplaced room is worse than a
+roughly placed one.
+
+**Changed, second half: it can be moved.** Holding **both shoulders and both
+triggers together for one second** re-places the whole room from the current
+pose. The chord is read in the shell, above SDL, straight off the
+GameController framework and merged across every controller it holds — a Sense
+pair can arrive as two devices, and this gesture wants a hand on each — and it
+installs nothing on them, because SDL's MFi driver owns their
+`valueChangedHandler` and taking it would take the game's input with it. It is a
+chord rather than a button because every button is something Mario Kart 64 does
+and the two stick clicks are already the settings menu; a recentre that fired
+mid-race would move the world under someone at speed, which is the one thing in
+this app that can make a person ill. The left shoulder is the safety pin: `L` is
+unused in Mario Kart 64, so dragging a shell through a drift — left trigger and
+right shoulder — cannot reach it. One hold fires once; the chord must be
+released before it can fire again.
+
+The engine needed no change at all. It reads `eyeFromRecentre` out of the
+published views every eye of every frame, so a room that moves is picked up on
+the next frame by construction.
+
+**What the log will now say.** The placement line carries the head's own
+position, which is the number a future "the HUD is off to one side" report has
+to be read against: the panel is fixed in the frame placed there, so the
+difference between that pose and the pose the wearer is in when they complain is
+the whole answer. A timed-out settle logs that it timed out; the chord logs its
+edges from the shell and its firing from the compositor, so an archive can
+separate "the chord was never completed" from "it was, and the room did not
+move".
+
+**Boundary.** **Built and unworn.** Both the device and Simulator apps build and
+the device app passes the audit (`arm64`, unsigned, archive content
+`5ab6f5d8…`). Nothing here has been on a face: the settle has never run against
+a real head, no chord has ever been held on real hardware, and whether the
+thresholds are right is a wearer's measurement. This also does not touch either
+maintained patch — every line is in `visionos/` — so no patch was regenerated.
+The wearer's report is **explained** rather than fixed: what has been fixed is
+the pose the room is placed from, and only a wear can say whether that puts the
+HUD where they are looking.
+
+### 2026-08-02 (sixth wear) — The fill boxes are gone, confirmed on a face. What was left standing behind them is a fade the wide helpers turned into a square, and half a controller
+
+**The report.** The black boxes below are fixed. Two things remain: a square that
+appears as the main menu loads and unloads, and a pair of PS VR2 Sense
+controllers — powered on after launch — whose buttons drove the game while the
+sticks did nothing, so nothing could be steered or selected. A `log collect`
+archive was taken.
+
+**The fill-box fix is worn and confirmed.** That is the first wearer-confirmed
+Mode B fix since the camera factorisation, and it retires the fifth-wear entry's
+open boundary. It says nothing about the four other fixes riding in the same
+build; they drew no complaint, which is not the same as being checked.
+
+**The square is the menu's full-screen fade, shrunk by the game's own widescreen
+helpers.** `func_8009DAA8` fades the menu with
+`draw_box_wide(0, 0, 320, 240, black, alpha)`, and `draw_box_wide` emits its
+rectangle through `OTRGetRectDimensionFromLeftEdge` /`...FromRightEdge`. Those
+extend 4:3 content out to a wider screen, and both derive their extension from
+`OTRGetAspectRatio`, which returns `mCurDimensions.aspect_ratio` — the aspect of
+the surface the engine renders into. In Mode B that surface is **one eye's
+viewport, 1856×1792, aspect 1.04**, which is *narrower* than 4:3. So the helpers
+inset where they mean to extend: `160 − 120 × 1.04 = 35`, and the fade is emitted
+as `(35, 0, 285, 240)` — a 250×240 box, square to within four per cent, floating
+in the middle of the panel. Not full width, so it lands on the HUD panel rather
+than the backdrop, in front of the wearer, exactly as reported. It is a
+pre-existing defect that the black boxes were hiding, not a consequence of
+removing them.
+
+**Changed, first half.** `OTRGetAspectRatio` answers 4:3 while Mode B is engaged. That is the
+truthful answer for this mode rather than a special case: the game's 2D is
+composed onto the HUD panel, which `BeginStereoEye` builds at 4:3 by
+construction, and its 3D goes through a projection the eye replaces outright,
+keeping only near and far, which have no aspect in them. At 4:3 both edge helpers
+reduce to the identity, which is what a 4:3 panel wants, and it is the game-side
+half of the same decision the interpreter already makes when it skips
+`AdjXForAspectRatio` for a rectangle bound for a panel. The other callers are
+unaffected or improved: the main race cameras use `gScreenAspect`, not this;
+`framebuffer_effects.c` only crops when the ratio exceeds 4:3, which neither
+value does; the sky's culling factor widens slightly, which is the direction that
+helps a wearer looking off-axis.
+
+**Changed, second half — a fade must fade the world, not a rectangle in front of
+it.** The first half only restored the fade to the full 4:3 frame, and the
+wearer's verdict on that was that fading a 4:3 box is no good either: it has to
+take the whole view or not be drawn. It has to. Every menu transition is the same
+primitive — `D_8018E810[4]` is fixed at `SCREEN_WIDTH × SCREEN_HEIGHT` and
+`D_8018E7E8[4]` at its centre, so `draw_fade_in`, `func_8009D77C` and
+`func_8009DAA8` all emit `draw_box_wide(0, 0, 320, 240)` and animate the *alpha*,
+never the size — and at 4:3 that is exactly the framebuffer, ±1 in both axes.
+
+So the placement rule stops naming a cycle and names a purpose: **an untextured
+rectangle covering the whole frame is a veil over the view** — a clear, a fade, a
+wipe at full extent — and keeps its framebuffer coordinates instead of going to a
+panel. Left there it covers the eye: `AdjXForAspectRatio` widens x past both
+edges of a viewport narrower than 4:3, and y already spans the frame. Nothing
+else changes hands. A veil has no distance to be placed at and no orientation to
+disagree between the eyes, which is why the mirrored-frustum asymmetry that
+"reversed" the textured backdrop on the fourth wear cannot reach one: flat colour
+looks the same through two canted frustums. That is also why the test needs the
+untextured half — `GfxDpFillRectangle` passes it, `GfxDpTextureRectangle` does
+not — since a *picture* covering the frame is still a picture and still has to
+hang somewhere.
+
+The rule now reads: an image goes on a panel; flat colour goes on a panel unless
+it covers the frame, in which case it covers the view. That is one sentence where
+there were three exclusions, and each of the three had been wrong once.
+
+**The controllers: the app was running on half a pair, and the archive says which
+half.** From `avp.logarchive`, one launch, PID 1695:
+
+| Time | Event |
+|---|---|
+| 17:14:45 | app launches |
+| 17:14:57.502 | `no game controller is connected` — both Sense controllers were off |
+| 17:15:29.65 | the **right** Sense pairs over Bluetooth |
+| 17:15:30.78 | it reaches the app: `Connected devices changed (1 added) -> [3]`, `'Spatial Controller'/'PlayStation VR2 Sense Controller (R)'` |
+| 17:15:30.85 | the app reports `1 game controller(s) connected: PlayStation VR2 Sense Controller (R)` |
+| 17:15:30.80 | the **left** Sense pairs over Bluetooth |
+| 17:15:32.14 | `gamecontrollerd` builds its logical device and names 1695 the active process |
+| 17:15:32.15 | `Publish Controllers` to the app |
+| 17:15:32.18–32.28 | `situationalawarenessd`, `backboardd`, `matted` and `RealityHUD` all add the left controller, reaching two |
+| — | **the app never does.** Its device list stays at the right Sense for the rest of the session |
+| 17:15:37.04 | `port 0 first input reached the game: buttons 0x0009, stick (0, 0)` |
+
+The left thumbstick is on the left controller. Mario Kart 64 steers and moves
+menu selections with the left stick and accelerates with a face button, and the
+face buttons are on the right controller — so the symptom is exactly what half a
+pair produces. The engine's own path is fine: `RefreshConnectedSDLGamepads` opens
+every gamepad SDL enumerates and marks all of them ignored on ports 1–3, so both
+halves of a pair drive port 0 as one controller. It only ever had one to open.
+
+**What is not yet known, and what was added to find out.** Three layers could
+have dropped it — the framework never delivering it, SDL's MFi driver refusing it
+(`IOS_AddMFIJoystickDevice` frees a device it cannot read and logs nothing, which
+a half-pair with no face buttons could well hit), or the
+`SDL_CONTROLLERDEVICEADDED` event being lost before
+`Ship::SDLAddRemoveDeviceEventHandler` acts on it, which this lane has suffered
+once before. The archive cannot separate them: it shows the framework's own
+`Connected devices changed` line absent from this process, but an absent debug
+line is not proof. **A rescan would not settle it either** — SDL's MFi driver
+builds its device list from notifications alone, so `SDL_NumJoysticks` cannot see
+what the notification never carried. So the shell now watches
+`GCControllerDidConnect`/`Disconnect` itself, above SDL, logs every controller
+the framework hands this process, and two seconds later logs an error when the
+framework holds more than the game does. That names the layer on the next wear:
+if the framework offered the left Sense, the loss is this project's and fixable;
+if it never did, it is not, and the answer is to connect the pair before
+launching.
+
+**Boundary.** Both changes are **built and unworn** — Simulator and device
+libraries and apps compile, and both patches reverse-apply clean against the
+built trees. Mode B declines in the Simulator, so neither the aspect answer nor
+the controller watcher has run in the mode that needs them. The controller change
+diagnoses; it fixes nothing by itself, and no second controller has been seen
+reaching this app since.
+
+### 2026-08-02 (fifth wear) — Black boxes hanging in front of the wearer's face in the menus: an exclusion named a whole cycle when it meant the clears inside it
+
+**The report.** Floating black boxes while navigating the game menus, fixed in
+front of the face as the wearer looks around, masking a different part of the
+view on each screen — which the wearer read, correctly, as coming from the
+individual menus.
+
+**What they are.** Mario Kart 64 draws menu furniture in fill cycle, not only its
+clears. `menu_items.c`'s `draw_box_fill` sets a fill colour and fills a box;
+`func_80098FC8` is that with the colour fixed at opaque black; `draw_box_fill`
+under `draw_flash_select_case` is the pulsing highlight beneath a selection; and
+`func_80098FC8_wide` is the cinematic borders. `StereoRectOnPanel` excluded the
+whole of `G_CYC_FILL` — literally `cycleType != G_CYC_FILL` — on a reason
+recorded 2026-08-01 that only ever described the clears: "G_CYC_FILL is how this
+game clears; a clear has no distance to be placed at."
+
+So every one of those boxes kept raw framebuffer NDC while the rest of the menu
+was placed on the HUD panel. Raw NDC in an eye's render target is that eye's
+**entire field of view**, at the near plane, head-locked — so the 63×17-pixel
+black box behind a menu readout became a full-size black rectangle pinned to the
+face, in front of text that had meanwhile shrunk onto a 4:3 panel 2.2 m out.
+Different screens fill different boxes, which is the mask that changes.
+
+**Changed.** A fill-cycle rectangle is excluded only when it covers the frame.
+The two things the old exclusion was written to protect are already protected
+elsewhere and do not need the cycle test: `GfxDpFillRectangle` widens a fill
+matching the native frame so a clear still covers a wider viewport, and it routes
+a fill whose colour image is the z-buffer — `init_z_buffer` and its splitscreen
+counterpart, full-frame or partial — down `ClearDepthRegion` and returns before
+any rectangle is built. What is left is furniture, and it now takes the same
+panel rule every other rectangle takes: full-width to the backdrop panel,
+anything narrower to the HUD panel with the text it sits behind. The cinematic
+borders, being full-width bars, therefore go behind the world rather than
+staying as black bands across the wearer's view. `StereoRectOnPanel` takes all
+four NDC bounds now, since coverage is what it tests rather than width.
+
+**Boundary.** Built and unworn. libultraship compiles for both
+`arm64-apple-xros26.0` and `arm64-apple-xros26.0-simulator` with `__VISIONOS__`
+defined, and `interpreter.o` carries
+`Fast::Interpreter::StereoRectOnPanel(float, float, float, float, unsigned int) const`
+in each; `libultraship-visionos.patch` was regenerated and reverse-applies clean
+against the built tree. Nothing was seen: the Simulator reports one view, so
+Mode B declines there and no fill rectangle in this change has ever been drawn
+onto a panel. **Which build produced the report is not recorded**, so this entry
+claims nothing about whether the five fixes before it have now been worn.
+
+If black boxes survive this, two suspects, in order. The settings overlay is a
+different draw path from the game's own menus and this change does not touch it.
+And the scissor never follows a rectangle onto the panel: `gDPSetScissor` is
+applied in framebuffer coordinates against the whole eye, so `menu_items.c:6967`,
+which scissors a menu to `(0, 0, 319, 194)`, clips panel-placed 2D by a rectangle
+that was never moved with it. A capture of both eyes, not a verbal report, is
+what settles either.
+
+### 2026-08-02 (Phase 6, and a wearer's crash) — The settings menu could not be opened at all on this platform; now all thirteen pages are reachable from a pad. Separately, a Mode B race ended in a jetsam kill, and the app had been silenced by the OS four minutes before it
+
+**Phase 6 was not "not started". It was unreachable.** The gate reads "every
+settings page operable with a controller alone", and on visionOS the menu could
+not be opened by any means whatsoever. Three things, each of which alone was
+enough:
+
+1. **No gamepad input reached ImGui, ever.** The visionOS ImGui platform half
+   (`VisionOSNewFrame`, added in the Phase 2 work) replaced
+   `ImGui_ImplSDL2_NewFrame` because there is no SDL window to wrap. That
+   function is also the only caller of `ImGui_ImplSDL2_UpdateGamepads`, so
+   every `ImGuiKey_Gamepad*` sat at rest forever. The comment there said
+   "controller navigation arrives in Phase 5"; Phase 5 delivered controller
+   input to the *game*, through the control deck, and nothing to the menu.
+2. **The toggle was behind a switch that lives inside the menu.** Upstream gates
+   the pad's Back button on `gControlNav`, which defaults to 0 and whose only
+   control is in Settings. F1 and Escape need a keyboard an immersive space does
+   not have. So the one way in was locked behind the room it opens.
+3. **The shell was never told.** `SpaghettiPad_SetMenuVisible` was called from
+   `Gui::DrawMenu`, which is virtual and which SpaghettiKart overrides without
+   chaining (`SpaghettiGui`, installed at `Engine.cpp:173`). The notification
+   reached the shell in exactly the configurations nobody ships. It now fires
+   from `Gui::StartDraw`, which is not virtual.
+
+The gamepad mapping is ImGui's SDL2 table transcribed, sourcing handles from
+`ConnectedPhysicalDeviceManager` rather than opening its own — the control deck
+already owns those devices. `ImGuiBackendFlags_HasGamepad` is not decoration:
+ImGui clears every gamepad key each frame unless a backend claims it. On
+visionOS the nav gate is removed rather than defaulted on, because a default can
+be switched off and here that is a one-way door; `PortMenu` accordingly stops
+offering the switch, joining the two consoles already excluded for the same
+reason. `Gui::SupportsViewports()` now answers false: it was returning true
+through the `FAST3D_SDL_METAL` arm, enabling multi-viewport against a platform
+backend this app had replaced.
+
+**All thirteen pages, opened and walked with nothing but a pad.**
+`scripts/run-visionos-sim-menu.sh` does a clean install, launches into the
+immersive space, and drives the menu:
+
+```
+scripted presses 57
+pages reached    13 of 13
+  Settings / General, Audio, Graphics, Controls
+  Enhancements / General, Cheats, Freecam, Rulesets
+  Developer / General, Gfx Debugger, Stats, Console, Scene Visibility
+```
+
+The expected list is written into the script rather than discovered, so a page
+added upstream makes the run report a shortfall instead of walking twelve of
+thirteen and calling it every. The shell log brackets it: `menu opened` on the
+Back press, `menu closed` twenty seconds later on the next one.
+
+**The pad is synthetic, and that is the part worth reading carefully.** No
+controller can be attached to a Simulator, and SDL's virtual-joystick driver is
+unavailable here — SDL declares `SDL_VIRTUAL_JOYSTICK` dependent on
+`SDL_HIDAPI`, which this lane forces off because SDL 2.32.10 has no visionOS
+HIDAPI branch and fails to compile. So the substitution is made one layer up, at
+the button state: a scripted press travels through the same mapping table, the
+same cross-pad merge, the same `ImGuiKey` and the same nav machinery a real
+pad's would. What stays untested is `SDL_GameControllerGetButton` reporting real
+hardware, which is upstream's and shared with every other platform. The
+scripted pad is compiled **only for the Simulator** — a device build carries an
+inert stub, so no synthetic input path exists in a packaged artifact at all.
+
+**What the walk taught about the menu itself**, none of which is a defect but
+all of which a wearer will meet: directions alone go nowhere, because the menu's
+contents live in ImGui child windows that are entered with A and left with B;
+the first directional press only makes navigation visible; and the first item
+inside the menu block is the **close button**, so a wearer's first A press shuts
+the menu. An earlier version of this script pressed only the d-pad and reported
+one page for twenty seconds, which is what sent this investigation into ImGui's
+nav internals before the answer turned out to be "press A".
+
+**Boundary.** Every result above is the Simulator's. "Operable" is claimed only
+as *reachable and selectable*: a scripted walk cannot say whether each page's
+widgets can be actuated, or whether 13 px ImGui text is legible on a screen two
+metres away in a headset. Both are for a wearer, and both are Phase 6's device
+half.
+
+---
+
+**The same day, a wearer's session was killed, and this is what the archive
+says.** The owner drove a race in Mode B and the app went away at the end of it.
+The cause is not ambiguous:
+
+```
+16:00:14.003 launchd: UIKitApplication:com.subtlepath.spaghettipad[1610]
+  exited with exit reason (namespace: 1 code: 0x7)
+  - JETSAM_REASON_MEMORY_PERPROCESSLIMIT, ran for 349766ms
+```
+
+RunningBoard had set the limit at launch: `Memory Limits: active 5120 inactive
+5120`. The app exceeded **5120 MiB** and was killed after 5 min 50 s. This is
+the second session this lane has lost to that exact reason.
+
+**A first reading of this blamed the texture pack, and that was wrong.** The
+archive carries two *shell* lines — `enhanced textures on for the next engine
+start` and `imported texture pack: 423 MiB ...
+mk64-reloaded-v2026.04.03-sk-hd.o2r` — and those say the shell wrote a
+preference and copied a file. Neither says the engine loaded a mod. **The owner,
+who was wearing it, reports the pack was not rendering**, and the archive cannot
+contradict that: it contains no `ModManager` line at all. Every one of the
+engine's startup lines is missing from it, because they are `SPDLOG_INFO` →
+`OS_LOG_TYPE_INFO`, which lives in the in-memory ring rather than the persistent
+store — the exact risk the 2026-08-02 Phases 7/8 entry recorded when that sink
+was added, now realised. The first engine line that survives is 1.3 s after the
+game loop started.
+
+**That makes the memory result worse, not better.** What is left is: **Mode B**,
+which renders every frame's display list twice, once per eye, into 1856×1792
+per-eye targets — reaching a 5120 MiB limit in under six minutes on *stock* MK64
+assets. "HD art is large" would have been a comfortable explanation and is not
+available. `GfxRenderingAPIMetal::DeleteTexture()` is an empty function and
+`NewTexture()` only ever grows `mTextures`, and `docs/TECH_DEBT.md` already
+recorded that texture lifetime was unprofiled; but nothing here has profiled an
+allocation, and the honest position is that **the cause is unknown**.
+
+**The app had been silenced by the operating system four minutes before it
+died.**
+
+```
+15:57:07.442 SpaghettiPad (libsystem_trace.dylib) QUARANTINED DUE TO HIGH LOGGING VOLUME
+```
+
+After that timestamp not one of this app's own log lines appears — no
+compositor, no engine, no shell. The last compositor line is 15:57:02.802,
+reporting a healthy 1201 frames at 90 Hz, all stereo, zero GPU command-buffer
+failures; the next was due at 15:57:09 and the quarantine had landed by then.
+So the archive's silence over the final three minutes is the quarantine, not a
+freeze, and it means **the run has no diagnostics from the window that matters**.
+
+The volume was not this project's. Of the app's 7,526 messages in the archive,
+**6,064 are `com.apple.UIKit:EventDispatch`** — two lines per GameController
+event, logged because a fully immersive app has no UIEvent responder for them.
+This project's own subsystem contributed 163. Nothing in this repository can
+turn Apple's logging off, which makes the quarantine a standing hazard for every
+device session with a controller connected, and a reason to keep this lane's own
+per-frame diagnostics rare rather than merely capped. The Phase 6 nav
+diagnostics written during this work were per-frame while being debugged and are
+now a single line per launch, for exactly that reason.
+
+**What has been added is the one thing that was missing: a number.** The app had
+no memory instrumentation anywhere, so an archive could name the reason and not
+the cause. The compositor's periodic report now carries
+`os_proc_available_memory` — the headroom before the limit jetsam actually acts
+on — alongside `phys_footprint`, every 600 frames, with the drop since the first
+sample. The next wear turns "it died" into a curve.
+
+**Boundary.** No fix for the memory growth is claimed, because none has been
+made and nothing has been profiled. What the archive supports: the kill reason,
+the limit, the duration, Mode B being the mode, and 1201 consecutive stereo
+frames at 90 Hz with no GPU errors before the logging stopped. What it does
+**not** support: which allocation grew, whether any mod was loaded, or what the
+wearer saw. Two of those three were asserted in a first draft of this entry on
+inference from shell-side lines, and are corrected above rather than quietly
+removed.
+
+**A second, cheaper defect falls out of this.** A device archive cannot
+currently answer "which mods did the engine load", because the engine's whole
+startup — version banner, `ModManager`, `ArchiveManager`, banks, sequences — is
+`OS_LOG_TYPE_INFO` and does not survive collection. Those few dozen lines are
+the ones most worth having and the least costly to keep; promoting startup and
+mod-load lines to a persisted type would have answered this question in one
+grep instead of needing the wearer to answer it.
+
+### 2026-08-02 (Phases 7 and 8) — The ROM converts inside the app, which needed three defects fixed first; the engine's log finally reaches a device archive; and the lane gets a package, a workflow and a README
+
+**Phase 7's open half was not "written and unexercised". It could not run.**
+The plan said extraction was the engine's — `GameExtractor` scans the container,
+Torch builds `mk64.o2r` — and the launch window's own comment said so:
+"Extraction is the engine's, and it runs on the engine's first launch." Three
+things stood between a person importing a ROM and that ever happening, and
+each of them was invisible for exactly the same reason: every Simulator result
+this lane has ever recorded was produced against an archive Torch had built on
+the *host* and copied in, so the first-run path had never executed once.
+
+1. **The shell refused to start the engine without an archive.** The guard was
+   right about the empty case — upstream puts up an `SDL_ShowMessageBox` that
+   cannot draw with SDL's video subsystem off, then exits — and wrong about
+   this one: an imported ROM and no archive is not "nothing to play", it is the
+   first run, and refusing it refused the only thing that could ever create an
+   archive. It now refuses only when the container holds neither, and says
+   which case it is in.
+2. **`GameEngine::ShowYesNoBox` decided by coin toss.** Its `int ret;` is
+   uninitialised, and `SDL_ShowMessageBox` with no video subsystem fails
+   without writing it. So the first-run "No O2R files found. Generate one now?"
+   prompt returned whatever was on the stack, and roughly half the time that
+   would have been read as No — which is `_Exit(1)`, the app vanishing with no
+   message. visionOS now answers yes and logs it, because reaching that line
+   means the shell already found a ROM, which is the person asking for exactly
+   this. `ShowMessage` joins `__SWITCH__` in logging rather than calling SDL.
+3. **`GameExtractor::SelectGameFromUI` would have opened a desktop file
+   dialog.** visionOS is not `__IOS__`, so it took the desktop branch and its
+   `pfd::open_file` fallback. It now joins the mobile branch. Unreachable while
+   the container scan finds a supported ROM, and the trap waiting for the first
+   person whose ROM is the wrong dump.
+
+**It runs, from a clean container, and the numbers are the point of running
+it.** `scripts/run-visionos-sim-extraction.sh` is the reproducible form:
+uninstall (which is what makes the container clean rather than merely empty),
+install, verify Documents holds nothing, place the ROM — byte-for-byte what
+`SpaghettiPad_ImportRom` does once a person has picked a file — launch, and
+wait for the archive.
+
+```
+In-app extraction succeeded:
+  ROM sha256       d6b8538dd63f0132ecb2856e7d32816ed3c30e3e479aecd23cf83fb6ba17a5da
+  elapsed          438s
+  peak RSS         1085 MiB
+  archive          26664858 bytes, 32447 entries
+  archive sha256   de2ef5a9a3057de72edd69b32fc89b5383ed87f9756fbf984f03fd6bb308fb8b
+  no ROM image inside the archive
+```
+
+Torch identified the game from the container itself — `Game: MARIOKART64`,
+`Hash: 579c48e211ae952530ffc8738709f078d5dd215e`, the exact SHA-1 the README
+names as supported. **Peak RSS 1085 MiB is the number to carry to the
+headset**: this lane has already lost one session to `jetsam reason
+per-process-limit`, and extraction is now known to be a gigabyte-class event
+before a single frame is drawn. Two runs produced identical byte counts and
+entry counts and different file hashes; the archive is a ZIP and its timestamps
+move, so a whole-file hash is not a reproducibility claim and is recorded as
+identity, not as proof.
+
+**The launch window can now say all of this.** With a ROM and no archive it
+offers "Convert ROM to Game Data" with a running elapsed count, rather than the
+previous state, which was a label telling people to copy a ROM into a folder
+and no way to do anything with it afterwards. Extraction is deliberately not
+folded into opening the immersive space: seven minutes of test pattern inside a
+headset is not a way to tell someone their ROM is being converted. And because
+every extraction failure ends in `_Exit(1)` — upstream's deliberate choice,
+since those bail-outs run before the game world exists — the shell drops a
+marker before starting and reads it once on the next launch, so a failure that
+takes the whole process with it still leaves something behind to report.
+
+**The engine's log now reaches a device archive, which this project has needed
+for weeks.** `libultraship` gained an `os_log` sink beside its existing stdout
+and rotating-file sinks, under the `engine` category of the app's own
+subsystem. Every device diagnostic this lane has chased was previously written
+twice — once as SPDLOG for the engine and once as `os_log` for the shell — or
+simply went unseen, which is what sent nine build-install-wear cycles after a
+black frame. The Simulator run above is the first evidence it works: the
+extraction banner, Torch's game identification and its per-resource lines all
+appear under `com.subtlepath.spaghettipad:engine`. Errors map to
+`OS_LOG_TYPE_ERROR` and are persisted; ordinary lines map to
+`OS_LOG_TYPE_INFO`, which lives in the in-memory ring a `log collect` archive
+captures rather than in the persistent store. That mapping is deliberate and
+its risk is worth stating: extraction alone emits tens of thousands of lines,
+and an archive collected *during* one would be mostly Torch.
+
+**Phase 8: the lane can now produce an artifact and say what made it.**
+`scripts/package-visionos.sh` audits the bundle, wraps it in the same `Payload/`
+container iOS uses, and refuses a signed app unless asked. The unsigned device
+app built from this tree passes the audit — arm64, `platform VISIONOS`, minimum
+26.0, ARKit/CompositorServices/Metal linked, port archive content
+`5ab6f5d8…`, unsigned — with executable SHA-256
+
+```
+53120f500da87f47b959f7bd52cbb213081e4f7b3db39bbcf587e7487141b279
+```
+
+and packages to `SpaghettiPad-visionOS-0.2.0-preview.1-unsigned.ipa`, SHA-256
+`31b1ae2bdf4f1b7030d9622844aa89415b645ee1ccf8534e48d1f5a672dcbf1a`. The
+executable hash is the durable identity; the artifact is a ZIP and its hash
+moves with its timestamps. `REQUIRE_SIGNED=1` was run against the same app and
+rejected it, which is the gate CI exercises. The artifact
+carries `RIGHTS_AND_LICENSES.md`, 32 discovered third-party notices, and a
+`BUILD_PROVENANCE.txt` naming the Xcode build, the visionOS SDK, all three
+source revisions and whether the working tree was clean. That file exists
+because of an invariant this log already recorded and had no mechanism for:
+the active toolchain is a beta Xcode, and no release may be published from one
+without saying so. `SPAGHETTIPAD_EXPECTED_XCODE_BUILD` makes it a hard gate for
+anyone who wants one. The archive-allowlist check is an allowlist rather than a
+pattern — the only `.o2r` permitted is `spaghetti.o2r` — because a pattern is
+what the next kind of ROM-derived archive slips past.
+
+**The repository safety gate was red and is green.** `check-repo-safety.sh`,
+which is CI's first job, was failing on seven broken Markdown links: commit
+`1d31f06` deleted the iPad screenshots while the README still linked five of
+them, and the whole `docs/screenshots/` directory is gone — the visionOS
+captures this log names throughout were never committed and are not
+recoverable. The README no longer links them and the one Markdown link in this
+file has been converted to prose that says what the capture was and that it no
+longer exists. **The measured numbers those entries record stand; the pictures
+do not exist.** Nothing else was changed in any earlier entry.
+
+**A visionOS CI workflow exists and has never run.**
+`.github/workflows/visionos-build.yml` runs the safety gate, selects an Xcode
+that ships
+a visionOS SDK (failing by name if none does, rather than as a CMake error ten
+minutes later), reproduces the unsigned device app from the pinned inputs,
+packages it, exercises the `REQUIRE_SIGNED=1` rejection, and publishes the
+artifact hash and provenance to the run summary. It targets a `macos-26`
+runner, which is **an assumption, not a verified fact** — a hosted image
+without the visionOS 26 SDK cannot produce a build this lane's audit accepts,
+and nothing here can confirm the label until someone pushes. The retired
+iPadOS workflow is kept but no longer triggers on push or pull request: nothing
+in this lane can change its result, and a retired lane's failures would sit on
+every commit claiming something is broken that nobody is maintaining.
+
+**Docs.** The README is rewritten for visionOS: what the two modes are, what
+has been measured and on what — Simulator, headset, or build host, per row —
+what is explicitly not claimed, and the iPadOS lane condensed into one section
+that says its open gates were superseded rather than passed.
+`RELEASE_CHECKLIST.md` gains visionOS gates ahead of the retired ones,
+including the requirement to read the Xcode build out of the artifact and state
+it.
+
+**Boundary.** Everything above is a build-host or Simulator result. Both
+maintained patches were regenerated and replay byte-identically from the pinned
+revisions — reversed, replayed through `apply-patches.sh`, and the tree hashed
+before and after. **No part of this has been on a headset.** In-app extraction
+on an Apple Vision Pro is untested and is the half of Phase 7 that remains, and
+the 1085 MiB peak is a reason to expect it to be interesting rather than
+routine.
 
 ### 2026-08-02 (fourth wear) — "Still reversed": the backdrop diagnosis below was wrong, and the right one was sitting in an exclusion this project wrote itself
 
@@ -802,8 +1764,10 @@ of it hung on a screen — and the texture-pack path the 4K pack needs to get in
   `Loaded mod: MK64-Reloaded-SK v2026.0.0` and added the archive. With
   `gEnhancements.Mods.AlternateAssets` on, resident memory went from **265 MiB to
   707 MiB** and the captured frame shows the pack's own art: mowed-stripe grass,
-  gravel road detail, a crisp billboard.
-  ([screenshot](screenshots/visionos-4k-texture-pack.png))
+  gravel road detail, a crisp billboard. (The capture was
+  `docs/screenshots/visionos-4k-texture-pack.png`. It, and every other
+  visionOS capture this log names, was lost on 2026-08-02 — see that day's
+  entry. The measured numbers above stand; the pictures do not exist.)
 - **Nothing about Mode B's appearance has been seen by anyone.** The Simulator
   reports **one view**, so Mode B declines there by design — the log line reads
   `Mode B is unavailable here: this drawable reports 1 view(s), so there is no

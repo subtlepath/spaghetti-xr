@@ -338,10 +338,18 @@ index 00000000..5366446f
 +
 +#endif
 diff --git a/include/fast/interpreter.h b/include/fast/interpreter.h
-index d4b410b8..669ea86f 100644
+index d4b410b8..f01eff9c 100644
 --- a/include/fast/interpreter.h
 +++ b/include/fast/interpreter.h
-@@ -19,6 +19,12 @@
+@@ -2,6 +2,7 @@
+ 
+ #include <stdbool.h>
+ #include <stdint.h>
++#include <atomic>
+ #include <unordered_map>
+ #include <map>
+ #include <list>
+@@ -19,6 +20,12 @@
  #include "fast/resource/type/Texture.h"
  #include "ship/resource/Resource.h"
  
@@ -354,7 +362,7 @@ index d4b410b8..669ea86f 100644
  // TODO figure out why changing these to 640x480 makes the game only render in a quarter of the window
  #define SCREEN_WIDTH 320
  #define SCREEN_HEIGHT 240
-@@ -201,6 +207,16 @@ struct TextureCacheValue {
+@@ -201,6 +208,16 @@ struct TextureCacheValue {
      uint8_t cms, cmt;
      bool linear_filter;
  
@@ -371,18 +379,27 @@ index d4b410b8..669ea86f 100644
      std::list<struct TextureCacheMapIter>::iterator lru_location;
  };
  
-@@ -335,6 +351,10 @@ struct GfxTextureCache {
+@@ -335,6 +352,19 @@ struct GfxTextureCache {
      TextureCacheMap map;
      std::list<TextureCacheMapIter> lru;
      std::vector<uint32_t> free_texture_ids;
++    // Ids whose cache entry is gone but whose GPU texture is still allocated,
++    // because the frame that dropped the entry may already have encoded draws
++    // naming it. ReleaseEvictedTextures frees them at the next frame boundary
++    // and moves them to free_texture_ids; nothing else may reuse an id while it
++    // is in here.
++    std::vector<uint32_t> evicted_texture_ids;
 +    // The byte bound beside the entry bound, and the entry the current draw
 +    // just uploaded into — the one entry the byte eviction must never take.
 +    size_t total_bytes = 0;
 +    TextureCacheNode* last_inserted = nullptr;
++    // Entries dropped since launch, by any route. A count that climbs with the
++    // frame counter is a cache being thrashed rather than one being used.
++    uint64_t evictions = 0;
  };
  
  struct ColorCombiner {
-@@ -379,7 +399,10 @@ class Interpreter {
+@@ -379,7 +409,10 @@ class Interpreter {
      void StartFrame();
      void RunGuiOnly();
      void Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements);
@@ -394,7 +411,7 @@ index d4b410b8..669ea86f 100644
      void HandleWindowEvents();
      bool IsFrameReady();
      bool ViewportMatchesRendererResolution();
-@@ -408,6 +431,40 @@ class Interpreter {
+@@ -408,6 +441,44 @@ class Interpreter {
      void SetMsaaLevel(uint32_t level);
      void GetCurDimensions(uint32_t* width, uint32_t* height);
  
@@ -425,17 +442,21 @@ index d4b410b8..669ea86f 100644
 +    // Whether a rectangle primitive belongs on a panel of the eye currently
 +    // open. Rectangles never reach StereoProjection — they are written straight
 +    // to clip space, with P_matrix untouched — so their placement has to be
-+    // applied at the point where they are built instead. Fill-cycle clears and
-+    // off-screen-framebuffer draws answer no and keep their coordinates; which
-+    // panel — HUD or backdrop — is the caller's decision, where full-width
-+    // strips read as backgrounds.
-+    bool StereoRectOnPanel(float ndcLeft, float ndcRight, uint32_t cycleType) const;
++    // applied at the point where they are built instead. Untextured rectangles
++    // covering the whole frame, and off-screen-framebuffer draws, answer no and
++    // keep their coordinates; which panel — HUD or backdrop — is the caller's
++    // decision, where full-width strips read as backgrounds. The bounds are
++    // this eye's NDC, taken while the framebuffer's edges are still exactly
++    // -1 and 1; `untextured` means the rectangle arrived as a fill rectangle
++    // rather than a texture rectangle.
++    bool StereoRectOnPanel(float ndcLeft, float ndcTop, float ndcRight, float ndcBottom,
++                           bool untextured) const;
 +#endif
 +
      // private: TODO make these private
      void Flush();
      ShaderProgram* LookupOrCreateShaderProgram(uint64_t id0, uint64_t id1);
-@@ -415,6 +472,14 @@ class Interpreter {
+@@ -415,6 +486,21 @@ class Interpreter {
      void ShaderCacheClear();
      void TextureCacheClear();
      bool TextureCacheLookup(int i, const TextureCacheKey& key);
@@ -443,14 +464,34 @@ index d4b410b8..669ea86f 100644
 +    // inserted, then evicts from the LRU end until the cache is back under its
 +    // byte budget. Called once per import, from ImportTexture.
 +    void RecordTextureUpload(const RawTexMetadata* metadata, uint32_t origSizeBytes);
-+    // Evicts the least recently used entry: returns its texture id to the free
++    // Evicts the least recently used entry: hands its texture id to the pending
 +    // list, and releases the decoded archive resource behind it if it recorded
 +    // one.
 +    void EvictTextureCacheLru();
++    // Tells the draw path that every texture binding it holds is stale. Called
++    // by anything that drops cache entries.
++    void InvalidateBoundTextures();
++    // Frees the GPU textures of everything evicted since the last call and
++    // returns their ids for reuse. Called once at the top of a frame, which is
++    // the earliest point at which no encoder can still be naming them.
++    void ReleaseEvictedTextures();
      void TextureCacheDelete(const uint8_t* origAddr);
      void ImportTextureRgba16(int tile, bool importReplacement);
      void ImportTextureRgba32(int tile, bool importReplacement);
-@@ -542,6 +607,86 @@ class Interpreter {
+@@ -459,7 +545,11 @@ class Interpreter {
+     void GfxDpSetFogColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+     void GfxDpSetBlendColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+     void GfxDpSetFillColor(uint32_t pickedColor);
+-    void GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry);
++    // `untextured` is true only for GfxDpFillRectangle's caller: a rectangle of
++    // flat colour rather than an image. Mode B needs the two apart, because a
++    // flat one covering the frame is a veil over the view and an image covering
++    // it is a picture that has to hang somewhere.
++    void GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, bool untextured = false);
+     void GfxDpTextureRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, uint8_t tile, int16_t uls,
+                                int16_t ult, int16_t dsdx, int16_t dtdy, bool flip);
+     void GfxDpImageRectangle(int32_t tile, int32_t w, int32_t h, int32_t ulx, int32_t uly, int16_t uls, int16_t ult,
+@@ -542,6 +632,86 @@ class Interpreter {
      size_t mShadersIndex;
      int mInterpolationIndex;
      int mInterpolationIndexTarget;
@@ -537,6 +578,30 @@ index d4b410b8..669ea86f 100644
  };
  
  void gfx_set_target_ucode(UcodeHandlers ucode);
+@@ -550,8 +720,23 @@ int32_t gfx_check_image_signature(const char* imgData);
+ const char* gfx_get_shader(int16_t id);
+ const char* GfxGetOpcodeName(int8_t opcode);
+ 
++// Texture memory the rendering backend is holding right now, maintained by the
++// backend as it allocates and releases. Atomic because the number's whole
++// purpose is to be read from somewhere other than the engine thread — on
++// visionOS the compositor logs it beside the process footprint, and a texture
++// cache that is bounded on paper while the footprint climbs is exactly the
++// disagreement it exists to show.
++extern std::atomic<uint64_t> gGpuTextureBytes;
++extern std::atomic<uint64_t> gGpuTextureCount;
++
+ } // namespace Fast
+ 
++// The same numbers with the cache's own beside them, published once a frame
++// from the engine thread so a reader gets last frame's figures rather than a
++// torn view of this one's. Any argument may be null.
++extern "C" void gfx_texture_memory_stats(uint64_t* gpuBytes, uint64_t* gpuTextures, uint64_t* cacheEntries,
++                                         uint64_t* cacheBytes, uint64_t* evictions);
++
+ extern "C" void gfx_texture_cache_clear();
+ extern "C" void gfx_shader_cache_clear();
+ extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
 diff --git a/include/libultraship/bridge/windowbridge.h b/include/libultraship/bridge/windowbridge.h
 index e1a1f017..a74b2f25 100644
 --- a/include/libultraship/bridge/windowbridge.h
@@ -816,7 +881,7 @@ index da8adcfd..8dabcc33 100644
      // Setup mouse state manager
      wnd->GetMouseStateManager()->StartFrame();
 diff --git a/src/fast/backends/gfx_metal.cpp b/src/fast/backends/gfx_metal.cpp
-index 759f0981..26dfbdca 100644
+index 759f0981..446b9d7c 100644
 --- a/src/fast/backends/gfx_metal.cpp
 +++ b/src/fast/backends/gfx_metal.cpp
 @@ -33,6 +33,7 @@
@@ -827,7 +892,55 @@ index 759f0981..26dfbdca 100644
  
  #include "libultraship/libultra/abi.h"
  #include "ship/Context.h"
-@@ -74,10 +75,23 @@ bool GfxRenderingAPIMetal::MetalInit(SDL_Renderer* renderer) {
+@@ -58,6 +59,47 @@ static MTL::SamplerAddressMode gfx_cm_to_metal(uint32_t val) {
+     return MTL::SamplerAddressModeClampToEdge;
+ }
+ 
++// What one texture costs, for the running tally below.
++//
++// allocatedSize is the device's own figure — alignment, tiling and all — and is
++// what the process footprint actually moves by, so it is preferred wherever it
++// is answered. The visionOS Simulator answers 0 for every texture, which is how
++// a first run of this counter reported a thousand live textures worth nothing at
++// all, so the fallback is the texture's own geometry. Every format this backend
++// creates is four bytes per pixel — RGBA8 and BGRA8 for cache and framebuffer
++// textures, Depth32Float for depth — and a multisample texture pays per sample.
++static size_t TextureBytes(MTL::Texture* texture) {
++    const size_t reported = (size_t)texture->allocatedSize();
++    if (reported > 0) {
++        return reported;
++    }
++    return (size_t)texture->width() * (size_t)texture->height() * (size_t)std::max<NS::UInteger>(texture->depth(), 1) *
++           (size_t)std::max<NS::UInteger>(texture->arrayLength(), 1) *
++           (size_t)std::max<NS::UInteger>(texture->sampleCount(), 1) * 4;
++}
++
++// Every texture this backend owns passes through these two, so that
++// gGpuTextureBytes is the Metal texture memory the engine is holding rather than
++// a guess at it. Both use TextureBytes on the same immutable texture, so an
++// adopted texture is always released for exactly what it was booked at.
++static MTL::Texture* AdoptTexture(MTL::Texture* texture) {
++    if (texture != nullptr) {
++        gGpuTextureBytes.fetch_add(TextureBytes(texture), std::memory_order_relaxed);
++        gGpuTextureCount.fetch_add(1, std::memory_order_relaxed);
++    }
++    return texture;
++}
++
++static void ReleaseTexture(MTL::Texture*& texture) {
++    if (texture == nullptr) {
++        return;
++    }
++    gGpuTextureBytes.fetch_sub(TextureBytes(texture), std::memory_order_relaxed);
++    gGpuTextureCount.fetch_sub(1, std::memory_order_relaxed);
++    texture->release();
++    texture = nullptr;
++}
++
+ // MARK: - ImGui & SDL Wrappers
+ 
+ bool GfxRenderingAPIMetal::NonUniformThreadGroupSupported() {
+@@ -74,10 +116,23 @@ bool GfxRenderingAPIMetal::MetalInit(SDL_Renderer* renderer) {
      mRenderer = renderer;
      NS::AutoreleasePool* autorelease_pool = NS::AutoreleasePool::alloc()->init();
  
@@ -851,7 +964,7 @@ index 759f0981..26dfbdca 100644
      mCommandQueue = mDevice->newCommandQueue();
      mReadbackQueue = mDevice->newCommandQueue();
  
-@@ -96,7 +110,14 @@ static void SetupScreenFramebuffer(uint32_t width, uint32_t height);
+@@ -96,7 +151,14 @@ static void SetupScreenFramebuffer(uint32_t width, uint32_t height);
  
  void GfxRenderingAPIMetal::NewFrame() {
      int width, height;
@@ -866,7 +979,7 @@ index 759f0981..26dfbdca 100644
      SetupScreenFramebuffer(width, height);
  
      MTL::RenderPassDescriptor* current_render_pass = mFramebuffers[0].mRenderPassDescriptor;
-@@ -118,8 +139,34 @@ void GfxRenderingAPIMetal::RenderDrawData(ImDrawData* drawData) {
+@@ -118,8 +180,34 @@ void GfxRenderingAPIMetal::RenderDrawData(ImDrawData* drawData) {
      MTL::Texture* screen_texture = mTextures[framebuffer.mTextureId].texture;
      int fb_width = (int)(drawData->DisplaySize.x * drawData->FramebufferScale.x);
      int fb_height = (int)(drawData->DisplaySize.y * drawData->FramebufferScale.y);
@@ -901,7 +1014,79 @@ index 759f0981..26dfbdca 100644
  
      ImGui_ImplMetal_RenderDrawData(drawData, framebuffer.mCommandBuffer, framebuffer.mCommandEncoder);
  }
-@@ -618,7 +665,14 @@ void GfxRenderingAPIMetal::EndFrame() {
+@@ -330,7 +418,55 @@ uint32_t GfxRenderingAPIMetal::NewTexture() {
+     return (uint32_t)(mTextures.size() - 1);
+ }
+ 
++// Hand back a texture slot's GPU memory. The id itself stays: it indexes
++// mTextures, the caller recycles it, and the next upload into it allocates
++// afresh.
++//
++// This was empty, which is why the texture cache's byte budget could report
++// itself under budget while the process was killed for its footprint — see
++// Interpreter::ReleaseEvictedTextures, the only caller.
+ void GfxRenderingAPIMetal::DeleteTexture(uint32_t texID) {
++    if (texID >= mTextures.size()) {
++        return;
++    }
++
++    TextureDataMetal& texture_data = mTextures[texID];
++
++    for (FramebufferMetal& framebuffer : mFramebuffers) {
++        // A framebuffer's own colour texture is not the cache's to free, and
++        // freeing one would leave a render pass pointing at nothing.
++        if (framebuffer.mTextureId == texID) {
++            return;
++        }
++    }
++
++    for (FramebufferMetal& framebuffer : mFramebuffers) {
++        // Each framebuffer remembers the last texture and sampler it bound so a
++        // redundant bind can be skipped, and remembers them by address. The
++        // allocator is free to hand this texture's address straight to the next
++        // one, at which point that comparison would skip a bind that was needed,
++        // so the memory of it has to go with the texture.
++        for (int i = 0; i < SHADER_MAX_TEXTURES; i++) {
++            if (texture_data.texture != nullptr && framebuffer.mLastBoundTextures[i] == texture_data.texture) {
++                framebuffer.mLastBoundTextures[i] = nullptr;
++            }
++            if (texture_data.msaaTexture != nullptr && framebuffer.mLastBoundTextures[i] == texture_data.msaaTexture) {
++                framebuffer.mLastBoundTextures[i] = nullptr;
++            }
++            if (texture_data.sampler != nullptr && framebuffer.mLastBoundSamplers[i] == texture_data.sampler) {
++                framebuffer.mLastBoundSamplers[i] = nullptr;
++            }
++        }
++    }
++
++    ReleaseTexture(texture_data.texture);
++    ReleaseTexture(texture_data.msaaTexture);
++    if (texture_data.sampler != nullptr) {
++        texture_data.sampler->release();
++        texture_data.sampler = nullptr;
++    }
++    texture_data.width = 0;
++    texture_data.height = 0;
+ }
+ 
+ void GfxRenderingAPIMetal::SelectTexture(int tile, uint32_t texture_id) {
+@@ -357,12 +493,9 @@ void GfxRenderingAPIMetal::UploadTexture(const uint8_t* rgba32_buf, uint32_t wid
+     MTL::Region region = MTL::Region::Make2D(0, 0, width, height);
+ 
+     MTL::Texture* texture = texture_data->texture;
+-    if (texture_data->texture == nullptr || texture_data->texture->width() != width ||
+-        texture_data->texture->height() != height) {
+-        if (texture_data->texture != nullptr)
+-            texture_data->texture->release();
+-
+-        texture = mDevice->newTexture(texture_descriptor);
++    if (texture == nullptr || texture->width() != width || texture->height() != height) {
++        ReleaseTexture(texture_data->texture);
++        texture = AdoptTexture(mDevice->newTexture(texture_descriptor));
+     }
+ 
+     NS::UInteger bytes_per_pixel = 4;
+@@ -618,7 +751,14 @@ void GfxRenderingAPIMetal::EndFrame() {
          mScreenReadbackRequested = false;
      }
  
@@ -916,7 +1101,7 @@ index 759f0981..26dfbdca 100644
      mCurrentVertexBufferPoolIndex = (mCurrentVertexBufferPoolIndex + 1) % kMaxVertexBufferPoolSize;
      screen_framebuffer.mCommandBuffer->commit();
  
-@@ -688,7 +742,15 @@ int GfxRenderingAPIMetal::CreateFramebuffer() {
+@@ -688,7 +828,15 @@ int GfxRenderingAPIMetal::CreateFramebuffer() {
  
  void GfxRenderingAPIMetal::SetupScreenFramebuffer(uint32_t width, uint32_t height) {
      mCurrentDrawable = nullptr;
@@ -932,7 +1117,7 @@ index 759f0981..26dfbdca 100644
  
      bool msaa_enabled = Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger("gMSAAValue", 1) > 1;
  
-@@ -697,7 +759,7 @@ void GfxRenderingAPIMetal::SetupScreenFramebuffer(uint32_t width, uint32_t heigh
+@@ -697,7 +845,7 @@ void GfxRenderingAPIMetal::SetupScreenFramebuffer(uint32_t width, uint32_t heigh
  
      NS::AutoreleasePool* autorelease_pool = NS::AutoreleasePool::alloc()->init();
  
@@ -941,7 +1126,26 @@ index 759f0981..26dfbdca 100644
  
      MTL::RenderPassDescriptor* render_pass_descriptor = MTL::RenderPassDescriptor::renderPassDescriptor();
      render_pass_descriptor->colorAttachments()->object(0)->setTexture(tex.texture);
-@@ -750,9 +812,11 @@ void GfxRenderingAPIMetal::UpdateFramebufferParameters(int fb_id, uint32_t width
+@@ -709,8 +857,7 @@ void GfxRenderingAPIMetal::SetupScreenFramebuffer(uint32_t width, uint32_t heigh
+ 
+     // recreate depth texture only if necessary (size changed)
+     if (fb.mDepthTexture == nullptr || (fb.mDepthTexture->width() != width || fb.mDepthTexture->height() != height)) {
+-        if (fb.mDepthTexture != nullptr)
+-            fb.mDepthTexture->release();
++        ReleaseTexture(fb.mDepthTexture);
+ 
+         // If possible, we eventually we want to disable this when msaa is enabled since we don't need this depth
+         // texture However, problem is if the user switches to msaa during game, we need a way to then generate it
+@@ -725,7 +872,7 @@ void GfxRenderingAPIMetal::SetupScreenFramebuffer(uint32_t width, uint32_t heigh
+         depth_tex_desc->setMipmapLevelCount(1);
+         depth_tex_desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+ 
+-        fb.mDepthTexture = mDevice->newTexture(depth_tex_desc);
++        fb.mDepthTexture = AdoptTexture(mDevice->newTexture(depth_tex_desc));
+     }
+ 
+     render_pass_descriptor->depthAttachment()->setTexture(fb.mDepthTexture);
+@@ -750,9 +897,11 @@ void GfxRenderingAPIMetal::UpdateFramebufferParameters(int fb_id, uint32_t width
      // Screen framebuffer is handled separately on a frame by frame basis
      // see `SetupScreenFramebuffer`.
      if (fb_id == 0) {
@@ -953,7 +1157,56 @@ index 759f0981..26dfbdca 100644
  
          return;
      }
-@@ -928,6 +992,26 @@ void GfxRenderingAPIMetal::ClearFramebuffer(bool color, bool depth) {
+@@ -780,10 +929,9 @@ void GfxRenderingAPIMetal::UpdateFramebufferParameters(int fb_id, uint32_t width
+         tex_descriptor->setPixelFormat(mSrgbMode ? MTL::PixelFormatBGRA8Unorm_sRGB : MTL::PixelFormatBGRA8Unorm);
+         tex_descriptor->setUsage((render_target ? MTL::TextureUsageRenderTarget : 0) | MTL::TextureUsageShaderRead);
+ 
+-        if (tex.texture != nullptr)
+-            tex.texture->release();
++        ReleaseTexture(tex.texture);
+ 
+-        tex.texture = mDevice->newTexture(tex_descriptor);
++        tex.texture = AdoptTexture(mDevice->newTexture(tex_descriptor));
+ 
+         if (msaa_level > 1) {
+             tex_descriptor->setTextureType(MTL::TextureType2DMultisample);
+@@ -791,9 +939,8 @@ void GfxRenderingAPIMetal::UpdateFramebufferParameters(int fb_id, uint32_t width
+             tex_descriptor->setStorageMode(MTL::StorageModePrivate);
+             tex_descriptor->setUsage(render_target ? MTL::TextureUsageRenderTarget : 0);
+ 
+-            if (tex.msaaTexture != nullptr)
+-                tex.msaaTexture->release();
+-            tex.msaaTexture = mDevice->newTexture(tex_descriptor);
++            ReleaseTexture(tex.msaaTexture);
++            tex.msaaTexture = AdoptTexture(mDevice->newTexture(tex_descriptor));
+         }
+ 
+         if (render_target) {
+@@ -838,19 +985,16 @@ void GfxRenderingAPIMetal::UpdateFramebufferParameters(int fb_id, uint32_t width
+         depth_tex_desc->setMipmapLevelCount(1);
+         depth_tex_desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+ 
+-        if (fb.mDepthTexture != nullptr)
+-            fb.mDepthTexture->release();
++        ReleaseTexture(fb.mDepthTexture);
+ 
+-        fb.mDepthTexture = mDevice->newTexture(depth_tex_desc);
++        fb.mDepthTexture = AdoptTexture(mDevice->newTexture(depth_tex_desc));
+ 
+         if (msaa_level > 1) {
+             depth_tex_desc->setTextureType(MTL::TextureType2DMultisample);
+             depth_tex_desc->setSampleCount(msaa_level);
+ 
+-            if (fb.mMsaaDepthTexture != nullptr)
+-                fb.mMsaaDepthTexture->release();
+-
+-            fb.mMsaaDepthTexture = mDevice->newTexture(depth_tex_desc);
++            ReleaseTexture(fb.mMsaaDepthTexture);
++            fb.mMsaaDepthTexture = AdoptTexture(mDevice->newTexture(depth_tex_desc));
+         }
+     }
+ 
+@@ -928,6 +1072,26 @@ void GfxRenderingAPIMetal::ClearFramebuffer(bool color, bool depth) {
      MTL::LoadAction origLoadAction = srcColorAttachment->loadAction();
      if (color) {
          srcColorAttachment->setLoadAction(MTL::LoadActionClear);
@@ -980,7 +1233,7 @@ index 759f0981..26dfbdca 100644
      }
  
      MTL::RenderPassDepthAttachmentDescriptor* srcDepthAttachment = framebuffer.mRenderPassDescriptor->depthAttachment();
-@@ -971,7 +1055,7 @@ void GfxRenderingAPIMetal::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_so
+@@ -971,7 +1135,7 @@ void GfxRenderingAPIMetal::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_so
  
      int target_texture_id = mFramebuffers[fb_id_target].mTextureId;
      MTL::Texture* target_texture =
@@ -1299,7 +1552,7 @@ index 00000000..6cfc1e1b
 +
 +#endif
 diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
-index 028c3cc4..00157841 100644
+index 028c3cc4..b52fd39c 100644
 --- a/src/fast/interpreter.cpp
 +++ b/src/fast/interpreter.cpp
 @@ -28,6 +28,7 @@
@@ -1310,8 +1563,65 @@ index 028c3cc4..00157841 100644
  
  #include "ship/window/gui/Gui.h"
  #include "ship/resource/ResourceManager.h"
-@@ -447,6 +448,8 @@ void Interpreter::TextureCacheClear() {
+@@ -441,12 +442,64 @@ ColorCombiner* Interpreter::LookupOrCreateColorCombiner(const ColorCombinerKey&
+     return &mPrevCombiner->second;
+ }
+ 
++// Live GPU texture memory, maintained by whichever rendering backend is
++// allocating it, and the texture cache's own view of itself, published once a
++// frame from ReleaseEvictedTextures. Both are read from other threads; see
++// gfx_texture_memory_stats.
++std::atomic<uint64_t> gGpuTextureBytes{ 0 };
++std::atomic<uint64_t> gGpuTextureCount{ 0 };
++static std::atomic<uint64_t> gTextureCacheEntries{ 0 };
++static std::atomic<uint64_t> gTextureCacheBytes{ 0 };
++static std::atomic<uint64_t> gTextureCacheEvictions{ 0 };
++
++// Give up the cache's owning reference to the decoded resource an entry was
++// drawn from. Nothing in this port ever unloads a resource otherwise, so the CPU
++// copy of a 4K texture would outlive the GPU copy that was just dropped by the
++// whole life of the process. The resource reloads from the archive if it is ever
++// drawn again, and anything still holding it — the RDP's loaded_texture slots
++// keep a shared_ptr for uploads in flight — keeps it alive until it is done.
++//
++// A missing context is "too early or too late", not a fault: this runs at
++// shutdown as well as mid-frame.
++static void UnloadTextureResource(const std::string& path) {
++    if (path.empty()) {
++        return;
++    }
++    auto context = Ship::Context::GetInstance();
++    if (context == nullptr) {
++        return;
++    }
++    auto resourceManager = context->GetResourceManager();
++    if (resourceManager == nullptr) {
++        return;
++    }
++    resourceManager->UnloadResource(path);
++}
++
++// Make the next draw re-select every texture it uses.
++//
++// The draw path imports a tile's texture only when the RDP says that tile
++// changed, so a binding can outlive the cache entry it came from: the backend
++// keeps drawing with the texture id it was last given. That was survivable while
++// an evicted id kept its GPU texture — the draw got stale pixels. Now that the
++// id's texture is freed, the same draw would sample an empty slot, so anything
++// that drops entries has to say so here.
++void Interpreter::InvalidateBoundTextures() {
++    mRdp->textures_changed[0] = true;
++    mRdp->textures_changed[1] = true;
++}
++
+ void Interpreter::TextureCacheClear() {
+     for (const auto& entry : mTextureCache.map) {
+-        mTextureCache.free_texture_ids.push_back(entry.second.texture_id);
++        mTextureCache.evicted_texture_ids.push_back(entry.second.texture_id);
++        UnloadTextureResource(entry.second.resource_path);
++        mTextureCache.evictions++;
      }
++    InvalidateBoundTextures();
      mTextureCache.map.clear();
      mTextureCache.lru.clear();
 +    mTextureCache.total_bytes = 0;
@@ -1319,7 +1629,7 @@ index 028c3cc4..00157841 100644
      // Pre-allocate buckets so the map never rehashes during normal operation.
      // Rehashing invalidates all iterators, including those stored in LRU entries.
      mTextureCache.map.reserve(TEXTURE_CACHE_MAX_SIZE);
-@@ -454,6 +457,78 @@ void Interpreter::TextureCacheClear() {
+@@ -454,6 +507,101 @@ void Interpreter::TextureCacheClear() {
      std::fill(std::begin(mRenderingState.mTextures), std::end(mRenderingState.mTextures), nullptr);
  }
  
@@ -1337,27 +1647,50 @@ index 028c3cc4..00157841 100644
 +
 +void Interpreter::EvictTextureCacheLru() {
 +    TextureCacheMap::iterator it = mTextureCache.lru.front().it;
-+    mTextureCache.free_texture_ids.push_back(it->second.texture_id);
++    mTextureCache.evicted_texture_ids.push_back(it->second.texture_id);
 +    for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
 +        if (mRenderingState.mTextures[j] == &*it) {
 +            mRenderingState.mTextures[j] = nullptr;
 +        }
 +    }
 +    mTextureCache.total_bytes -= it->second.bytes;
-+    if (!it->second.resource_path.empty()) {
-+        // The GPU copy this entry owned is gone; the decoded CPU copy in the
-+        // resource cache would otherwise outlive it forever, because nothing
-+        // in this port ever unloads a resource. Dropping the cache's owning
-+        // reference frees the pixels once nothing else holds them — the RDP's
-+        // loaded_texture slots keep a shared_ptr for anything still in flight
-+        // — and a texture drawn again later simply reloads from the archive.
-+        Ship::Context::GetInstance()->GetResourceManager()->UnloadResource(it->second.resource_path);
-+    }
++    UnloadTextureResource(it->second.resource_path);
 +    if (mTextureCache.last_inserted == &*it) {
 +        mTextureCache.last_inserted = nullptr;
 +    }
++    InvalidateBoundTextures();
 +    mTextureCache.map.erase(it);
 +    mTextureCache.lru.pop_front();
++    mTextureCache.evictions++;
++}
++
++// Where an eviction's GPU memory actually goes back.
++//
++// Dropping the entry was never enough. A texture id names a slot in the
++// backend's own table, and the texture in that slot lives until something
++// overwrites it — so recycling the id through free_texture_ids handed the next
++// upload a slot that was still holding the last one's pixels. At N64 sizes that
++// was invisible. Against the 4K pack each slot is worth up to tens of megabytes,
++// the cache's byte budget bounded only the entries, and a wearer's session was
++// killed by jetsam with the cache dutifully reporting itself under budget: 8065
++// MiB of footprint, 126 MiB of headroom left, measured on an Apple Vision Pro on
++// 2026-08-03.
++//
++// The free is deferred to a frame boundary rather than done in EvictTextureCacheLru
++// because eviction runs mid-draw, from RecordTextureUpload, when the backend may
++// already have encoded draws naming the texture and the encoder is still open.
++// By here the previous frame has been committed, and Metal keeps its own
++// reference to anything a command buffer names until that buffer completes.
++void Interpreter::ReleaseEvictedTextures() {
++    for (uint32_t textureId : mTextureCache.evicted_texture_ids) {
++        mRapi->DeleteTexture(textureId);
++        mTextureCache.free_texture_ids.push_back(textureId);
++    }
++    mTextureCache.evicted_texture_ids.clear();
++
++    gTextureCacheEntries.store(mTextureCache.map.size(), std::memory_order_relaxed);
++    gTextureCacheBytes.store(mTextureCache.total_bytes, std::memory_order_relaxed);
++    gTextureCacheEvictions.store(mTextureCache.evictions, std::memory_order_relaxed);
 +}
 +
 +void Interpreter::RecordTextureUpload(const RawTexMetadata* metadata, uint32_t origSizeBytes) {
@@ -1398,7 +1731,7 @@ index 028c3cc4..00157841 100644
  void Interpreter::ShaderCacheClear() {
      mRapi->ClearShaderCache();
  }
-@@ -472,14 +547,7 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
+@@ -472,14 +620,7 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
  
      if (mTextureCache.map.size() >= TEXTURE_CACHE_MAX_SIZE) {
          // Remove the texture that was least recently used
@@ -1414,7 +1747,7 @@ index 028c3cc4..00157841 100644
      }
  
      uint32_t texture_id;
-@@ -494,6 +562,9 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
+@@ -494,6 +635,9 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
      TextureCacheNode* node = &*it;
      node->second.texture_id = texture_id;
      node->second.lru_location = mTextureCache.lru.insert(mTextureCache.lru.end(), { it });
@@ -1424,7 +1757,30 @@ index 028c3cc4..00157841 100644
  
      mRapi->SelectTexture(i, texture_id);
      mRapi->SetSamplerParameters(i, false, 0, 0);
-@@ -1225,12 +1296,14 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+@@ -520,9 +664,21 @@ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
+                     if (mRenderingState.mTextures[j] == &*it)
+                         mRenderingState.mTextures[j] = nullptr;
+                 }
++                // The same three things eviction does. Leaving the bytes booked
++                // told the budget the cache was fuller than it was, which spends
++                // itself on evicting entries that are still wanted; leaving the
++                // resource loaded and the texture id recycled leaked both copies
++                // of the pixels.
++                mTextureCache.total_bytes -= it->second.bytes;
++                UnloadTextureResource(it->second.resource_path);
++                if (mTextureCache.last_inserted == &*it) {
++                    mTextureCache.last_inserted = nullptr;
++                }
++                InvalidateBoundTextures();
+                 mTextureCache.lru.erase(it->second.lru_location);
+-                mTextureCache.free_texture_ids.push_back(it->second.texture_id);
++                mTextureCache.evicted_texture_ids.push_back(it->second.texture_id);
+                 mTextureCache.map.erase(it->first);
++                mTextureCache.evictions++;
+                 again = true;
+                 break;
+             }
+@@ -1225,12 +1381,14 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
  
      if ((texFlags & TEX_FLAG_LOAD_AS_IMG) != 0) {
          ImportTextureImg(tile, importReplacement);
@@ -1439,7 +1795,7 @@ index 028c3cc4..00157841 100644
          return;
      }
  
-@@ -1289,6 +1362,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+@@ -1289,6 +1447,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
              SPDLOG_ERROR("Invalid texture format. Fmt = {}", fmt);
              break;
      }
@@ -1447,7 +1803,7 @@ index 028c3cc4..00157841 100644
  }
  
  void Interpreter::ImportTextureMask(int i, int tile) {
-@@ -1383,6 +1457,513 @@ void Interpreter::CalculateNormalDir(const F3DLight_t* light, float coeffs[3]) {
+@@ -1383,6 +1542,552 @@ void Interpreter::CalculateNormalDir(const F3DLight_t* light, float coeffs[3]) {
      Interpreter::NormalizeVector(coeffs);
  }
  
@@ -1927,16 +2283,41 @@ index 028c3cc4..00157841 100644
 +// reads mid-race in Mario Kart 64 — lap, position, the item window — arrives as a
 +// texture rectangle rather than as an orthographic quad.
 +//
-+// Three kinds of rectangle must not be moved:
++// Two kinds of rectangle must not be moved:
 +//
-+//   - Fill-cycle rectangles. G_CYC_FILL is how this game clears; init_z_buffer
-+//     and its splitscreen counterpart point the colour image at the z-buffer and
-+//     fill it. A clear has no distance to be placed at, and moving one leaves a
-+//     band of the previous frame's contents along the edge it moved away from.
++//   - Untextured rectangles covering the whole frame. These are the game's veils
++//     over the view: clears, and the black fade `draw_box_wide(0, 0, 320, 240)`
++//     that every menu transition ramps up and down. A veil has no distance to be
++//     placed at, no orientation to disagree between the eyes — flat colour looks
++//     the same through two canted frustums, which is exactly why the mirrored
++//     asymmetry that "reversed" the textured backdrop cannot touch one — and it
++//     only does its job by covering everything the wearer can see. Left in
++//     framebuffer NDC it does: AdjXForAspectRatio widens x past both edges of an
++//     eye whose viewport is narrower than 4:3, and y already spans the frame.
 +//   - Rectangles drawn into an off-screen framebuffer. The shift belongs to the
 +//     draw that reaches the wearer's eye, and that is the later one that composites
 +//     this target onto the screen. Applying it here as well would place the
 +//     convergence inside a texture and then converge the texture again.
++//
++// Both of those replace one earlier rule that named a cycle instead of a
++// purpose — `cycleType != G_CYC_FILL` — and a wearer saw each mistake in turn.
++// First: G_CYC_FILL is the cycle Mario Kart 64 clears in, but it is also the
++// cycle it draws menu furniture in — `draw_box_fill` sets a fill colour and
++// fills a box, `func_80098FC8` is that with the colour fixed at opaque black,
++// `draw_flash_select_case` is the highlight under a selection. Excluded from
++// placement, all of it stayed at raw framebuffer NDC, which in an eye's render
++// target is the wearer's whole field of view, head-locked and at the near
++// plane: black boxes hanging in front of the face, over a menu whose text had
++// meanwhile shrunk onto the panel two metres out. Then, with those on panels:
++// the transition fade is not in fill cycle at all, so it went onto a panel with
++// them, and a wearer reported fading a rectangle in front of the world instead
++// of the world. Neither the cycle nor the caller distinguishes those. What does
++// is whether a rectangle covers the frame — the game's own statement that it
++// means to cover the view — and whether it is flat colour rather than a picture.
++//
++// Depth clears never reach here at all: GfxDpFillRectangle sends a fill whose
++// colour image is the z-buffer down ClearDepthRegion, full-frame or partial,
++// and returns before any rectangle is built.
 +//
 +// Full-width rectangles used to be a third exclusion, on the reasoning that a
 +// background belongs at infinity and identity coordinates put it there. They do
@@ -1950,10 +2331,24 @@ index 028c3cc4..00157841 100644
 +// is a real object in the recentre frame, consistent between the eyes, and
 +// wider than the view, so the unfilled-band worry the old exclusion answered
 +// does not arise.
-+bool Interpreter::StereoRectOnPanel(float ndcLeft, float ndcRight, uint32_t cycleType) const {
-+    (void)ndcLeft;
-+    (void)ndcRight;
-+    return mStereoActive && cycleType != G_CYC_FILL && !mFbActive;
++bool Interpreter::StereoRectOnPanel(float ndcLeft, float ndcTop, float ndcRight, float ndcBottom,
++                                    bool untextured) const {
++    if (!mStereoActive || mFbActive) {
++        return false;
++    }
++    if (!untextured) {
++        return true;
++    }
++    // Covering the frame is the game saying it means to cover the view. The
++    // tolerance is the one the full-width test uses, about two columns of a
++    // 320-wide frame, so a veil written to SCREEN_WIDTH - 1 still counts as
++    // covering; the widened clear GfxDpFillRectangle emits reaches well past
++    // every edge, and the transition fade lands on them exactly.
++    constexpr float kCoverageTolerance = 1.0f / 64.0f;
++    const bool coversFrame =
++        ndcLeft <= -1.0f + kCoverageTolerance && ndcRight >= 1.0f - kCoverageTolerance &&
++        ndcTop >= 1.0f - kCoverageTolerance && ndcBottom <= -1.0f + kCoverageTolerance;
++    return !coversFrame;
 +}
 +
 +#endif // __VISIONOS__
@@ -1961,7 +2356,7 @@ index 028c3cc4..00157841 100644
  void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
      float matrix[4][4];
  
-@@ -1416,11 +1997,41 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
+@@ -1416,11 +2121,41 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
      const int8_t mtx_push = get_attr(MTX_PUSH);
  
      if (parameters & mtx_projection) {
@@ -2003,7 +2398,7 @@ index 028c3cc4..00157841 100644
      } else { // G_MTX_MODELVIEW
          if ((parameters & mtx_push) && mRsp->modelview_matrix_stack_size < 11) {
              ++mRsp->modelview_matrix_stack_size;
-@@ -1685,8 +2296,19 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+@@ -1685,8 +2420,19 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
  
      // if (rand()%2) return;
  
@@ -2023,7 +2418,7 @@ index 028c3cc4..00157841 100644
          return;
      }
  
-@@ -1715,18 +2337,28 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+@@ -1715,18 +2461,28 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
  
          auto cull_type = mRsp->geometry_mode & cull_both;
  
@@ -2055,7 +2450,7 @@ index 028c3cc4..00157841 100644
      }
  
      // depth_test is set when the fragment has a depth value to compare (either from vertex Z via
-@@ -2178,6 +2810,16 @@ void Interpreter::GfxSpExtraGeometryMode(uint32_t clear, uint32_t set) {
+@@ -2178,6 +2934,16 @@ void Interpreter::GfxSpExtraGeometryMode(uint32_t clear, uint32_t set) {
  }
  
  void Interpreter::AdjustVIewportOrScissor(XYWidthHeight* area) {
@@ -2072,7 +2467,7 @@ index 028c3cc4..00157841 100644
      if (!mFbActive) {
          // Adjust the y origin based on the y-inversion for the active framebuffer
          GfxClipParameters clipParameters = mRapi->GetClipParameters();
-@@ -2207,6 +2849,28 @@ void Interpreter::AdjustVIewportOrScissor(XYWidthHeight* area) {
+@@ -2207,6 +2973,28 @@ void Interpreter::AdjustVIewportOrScissor(XYWidthHeight* area) {
              area->y *= RATIO_Y(mActiveFrameBuffer, mCurDimensions);
          }
      }
@@ -2101,13 +2496,23 @@ index 028c3cc4..00157841 100644
  }
  
  void Interpreter::CalcAndSetViewport(const F3DVp_t* viewport) {
-@@ -2712,8 +3376,46 @@ void Interpreter::GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_
+@@ -2693,7 +3481,7 @@ void Interpreter::GfxDpSetFillColor(uint32_t packed_color) {
+     mRdp->fill_color.a = a * 255;
+ }
+ 
+-void Interpreter::GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry) {
++void Interpreter::GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, bool untextured) {
+     uint32_t saved_other_mode_h = mRdp->other_mode_h;
+     uint32_t cycle_type = (mRdp->other_mode_h & (3U << G_MDSFT_CYCLETYPE));
+ 
+@@ -2712,8 +3500,50 @@ void Interpreter::GfxDrawRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_
      lrxf = lrxf / (4.0f * HALF_SCREEN_WIDTH(mActiveFrameBuffer)) - 1.0f;
      lryf = -(lryf / (4.0f * HALF_SCREEN_HEIGHT(mActiveFrameBuffer))) + 1.0f;
  
 +#ifdef __VISIONOS__
-+    // Decided while the framebuffer's edges are still exactly -1 and 1.
-+    const bool rectOnPanel = StereoRectOnPanel(ulxf, lrxf, cycle_type);
++    // Decided while the framebuffer's edges are still exactly -1 and 1. y is
++    // inverted by the conversion above, so the upper edge is the larger one.
++    const bool rectOnPanel = StereoRectOnPanel(ulxf, ulyf, lrxf, lryf, untextured);
 +    if (rectOnPanel) {
 +        // A rectangle is already in clip space with w = 1, so the placement that
 +        // StereoProjection folds into an orthographic matrix as multiples of w
@@ -2119,7 +2524,10 @@ index 028c3cc4..00157841 100644
 +        // Which panel: a rectangle spanning the full framebuffer width is a
 +        // background by construction — the menu backdrop arrives as exactly
 +        // such strips — and goes to the backdrop panel regardless of where in
-+        // the frame it is drawn. Anything narrower takes the same
++        // the frame it is drawn. Fill-cycle furniture takes the same rule, so
++        // the cinematic borders, which are full-width bars, go behind the world
++        // rather than staying as black bands pinned across the wearer's view.
++        // Anything narrower takes the same
 +        // before-first-perspective test the orthographic matrices take, so a
 +        // rectangle drawn as scenery lands where the scenery is. Tested in the
 +        // coordinates this is handed — before the panel transform — where the
@@ -2148,7 +2556,17 @@ index 028c3cc4..00157841 100644
  
      struct LoadedVertex* ul = &mRsp->loaded_vertices[MAX_VERTICES + 0];
      struct LoadedVertex* ll = &mRsp->loaded_vertices[MAX_VERTICES + 1];
-@@ -4049,6 +4751,21 @@ bool gfx_read_fb_handler_custom(F3DGfx** cmd0) {
+@@ -2947,7 +3777,8 @@ void Interpreter::GfxDpFillRectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
+         GfxDpSetCombineMode(color_comb(0, 0, 0, G_CCMUX_SHADE), alpha_comb(0, 0, 0, G_ACMUX_SHADE), 0, 0);
+     }
+ 
+-    GfxDrawRectangle(ulx, uly, lrx, lry);
++    // Flat colour, whatever the cycle: this command carries no texture.
++    GfxDrawRectangle(ulx, uly, lrx, lry, true);
+     mRdp->combine_mode = saved_combine_mode;
+ }
+ 
+@@ -4049,6 +4880,21 @@ bool gfx_read_fb_handler_custom(F3DGfx** cmd0) {
      width = C1(0, 16);
      height = C1(16, 16);
  
@@ -2170,8 +2588,27 @@ index 028c3cc4..00157841 100644
      gfx->Flush();
      gfx->mRapi->ReadFramebufferToCPU(fbId, width, height, rgba16Buffer);
  
-@@ -4877,6 +5594,22 @@ bool Interpreter::ViewportMatchesRendererResolution() {
+@@ -4844,6 +5690,12 @@ void Interpreter::Destroy() {
+ 
+     // Texture cache and loaded textures store references to Resources which need to be unreferenced.
+     TextureCacheClear();
++    // And the GPU textures those entries were holding. There is no next frame to
++    // defer to, and no frame in flight to protect: this runs after the loop has
++    // stopped. It matters because the engine can be stopped and started again
++    // inside one process, and without this every texture of the last session
++    // would still be resident through the next.
++    ReleaseEvictedTextures();
+     mRdp->texture_to_load.raw_tex_metadata.resource = nullptr;
+     mRdp->loaded_texture[0].raw_tex_metadata.resource = nullptr;
+     mRdp->loaded_texture[1].raw_tex_metadata.resource = nullptr;
+@@ -4875,8 +5727,28 @@ bool Interpreter::ViewportMatchesRendererResolution() {
+ }
+ 
  void Interpreter::StartFrame() {
++    // Before anything of this frame is encoded, so that nothing still open can
++    // be naming what is about to be freed.
++    ReleaseEvictedTextures();
++
      mWapi->GetDimensions(&mGfxCurrentWindowDimensions.width, &mGfxCurrentWindowDimensions.height, &mCurWindowPosX,
                           &mCurWindowPosY);
 +
@@ -2193,7 +2630,7 @@ index 028c3cc4..00157841 100644
      if (mCurDimensions.height == 0) {
          // Avoid division by zero
          mCurDimensions.height = 1;
-@@ -5032,9 +5765,15 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
+@@ -5032,9 +5904,15 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
      }
  }
  
@@ -2211,6 +2648,32 @@ index 028c3cc4..00157841 100644
      mRapi->FinishRender();
      mWapi->SwapBuffersEnd();
  }
+@@ -5323,6 +6201,25 @@ extern "C" void gfx_texture_cache_clear() {
+     Fast::mInstance.lock().get()->TextureCacheClear();
+ }
+ 
++extern "C" void gfx_texture_memory_stats(uint64_t* gpuBytes, uint64_t* gpuTextures, uint64_t* cacheEntries,
++                                         uint64_t* cacheBytes, uint64_t* evictions) {
++    if (gpuBytes != nullptr) {
++        *gpuBytes = Fast::gGpuTextureBytes.load(std::memory_order_relaxed);
++    }
++    if (gpuTextures != nullptr) {
++        *gpuTextures = Fast::gGpuTextureCount.load(std::memory_order_relaxed);
++    }
++    if (cacheEntries != nullptr) {
++        *cacheEntries = Fast::gTextureCacheEntries.load(std::memory_order_relaxed);
++    }
++    if (cacheBytes != nullptr) {
++        *cacheBytes = Fast::gTextureCacheBytes.load(std::memory_order_relaxed);
++    }
++    if (evictions != nullptr) {
++        *evictions = Fast::gTextureCacheEvictions.load(std::memory_order_relaxed);
++    }
++}
++
+ extern "C" void gfx_shader_cache_clear() {
+     auto instance = Fast::mInstance.lock().get();
+     instance->mColorCombinerPool.clear();
 diff --git a/src/libultraship/bridge/windowbridge.cpp b/src/libultraship/bridge/windowbridge.cpp
 index bfa5e7ea..6cd8ce61 100644
 --- a/src/libultraship/bridge/windowbridge.cpp
@@ -2244,10 +2707,10 @@ index bfa5e7ea..6cd8ce61 100644
      return Ship::Context::GetInstance()->GetWindow()->GetPosX();
  }
 diff --git a/src/libultraship/controller/controldeck/ControlDeck.cpp b/src/libultraship/controller/controldeck/ControlDeck.cpp
-index c7c96f63..8e330903 100644
+index c7c96f63..9b4574ac 100644
 --- a/src/libultraship/controller/controldeck/ControlDeck.cpp
 +++ b/src/libultraship/controller/controldeck/ControlDeck.cpp
-@@ -7,6 +7,26 @@
+@@ -7,6 +7,40 @@
  #include <imgui.h>
  #include "ship/controller/controldevice/controller/mapping/mouse/WheelHandler.h"
  
@@ -2255,6 +2718,13 @@ index c7c96f63..8e330903 100644
 +// Defined by the visionOS shell (see visionos/SpaghettiPadBridge.h). Declared
 +// weak with a no-op default so libultraship still links on its own.
 +extern "C" __attribute__((weak)) void SpaghettiPad_InputFirstActivity(int, unsigned, int, int) {
++}
++
++// The steering angle the shell reads from a pair of tracked Sense controllers,
++// in the same ±85 units this pad carries. Weak and returning 0 by default, so a
++// libultraship linked without the shell simply never steers.
++extern "C" __attribute__((weak)) int SpaghettiPad_MotionSteeringAxis(int*) {
++    return 0;
 +}
 +
 +namespace {
@@ -2268,18 +2738,41 @@ index c7c96f63..8e330903 100644
 +// has drifted. Buttons need no such allowance — a pressed button is pressed, and
 +// treating drift as input would report that the game was driven when it was not.
 +constexpr int kDeliberateStick = 20;
++
++// How much stick a thumb has to give before it takes steering back off the
++// wearer's hands. Small, because everything upstream of here has already had its
++// own deadzone applied and a resting thumb arrives as exactly zero — but not
++// zero, because a stick that drifts past that deadzone would otherwise switch
++// 6DoF steering off for the rest of the session with nothing to show for it.
++constexpr int kStickYields = 8;
 +} // namespace
 +#endif
 +
  namespace LUS {
  ControlDeck::ControlDeck(std::vector<CONTROLLERBUTTONS_T> additionalBitmasks,
                           std::shared_ptr<Ship::ControllerDefaultMappings> controllerDefaultMappings,
-@@ -70,5 +90,30 @@ void ControlDeck::WriteToOSContPad(OSContPad* pad) {
+@@ -70,5 +104,46 @@ void ControlDeck::WriteToOSContPad(OSContPad* pad) {
              controller->ReadToPad(&pad[i]);
          }
      }
 +
 +#ifdef __VISIONOS__
++    // 6DoF steering, written over port 0's stick after every controller has been
++    // read and before anything is told what the game saw.
++    //
++    // Here rather than in a mapping, because what the shell produces is not a
++    // device: there is no SDL joystick behind it, no port to bind, and nothing
++    // for the Input Editor to show. It is a correction applied to the stick the
++    // wheel is standing in for — so it is applied where the stick's value is
++    // final, and it steps aside the moment a thumb disagrees with it.
++    if (!mPorts.empty()) {
++        int steeringStickX = 0;
++        if (SpaghettiPad_MotionSteeringAxis(&steeringStickX) != 0 && pad[0].stick_x > -kStickYields &&
++            pad[0].stick_x < kStickYields) {
++            pad[0].stick_x = static_cast<int8_t>(steeringStickX);
++        }
++    }
++
 +    // "A controller is connected" and "the game read it" are separate claims, and
 +    // only the second is what Phase 5 is for. This is where the difference is
 +    // visible: whatever ReadToPad just wrote is exactly what the game will act
@@ -2319,10 +2812,83 @@ index e37a3a1d..ea6ae32e 100644
  endif()
  
 diff --git a/src/ship/Context.cpp b/src/ship/Context.cpp
-index 26d2ec2c..c87c2166 100644
+index 26d2ec2c..a6d2aa62 100644
 --- a/src/ship/Context.cpp
 +++ b/src/ship/Context.cpp
-@@ -479,11 +479,6 @@ std::string Context::GetAppBundlePath() {
+@@ -29,6 +29,62 @@
+ #include <pwd.h>
+ #endif
+ 
++#ifdef __VISIONOS__
++#include <os/log.h>
++#include <spdlog/sinks/base_sink.h>
++
++namespace {
++// Puts the engine's log where a device log archive can see it.
++//
++// visionOS keeps the two other sinks and neither reaches a headset: stdout goes
++// nowhere once the app is launched by the system rather than by a debugger, and
++// the rotating file lands inside the app container, which is only readable by
++// unpacking that container afterwards. Every device diagnostic this port has
++// needed so far was therefore written twice — once as SPDLOG for the engine and
++// once as os_log for the shell — or simply went unseen, which cost this project
++// several build-install-wear cycles chasing a black frame.
++//
++// The category is "engine" so `log collect` output separates it from the
++// shell's own "compositor", "surface", "shell", "audio" and "input" lines while
++// keeping the whole app under one subsystem.
++class OsLogSink final : public spdlog::sinks::base_sink<std::mutex> {
++  protected:
++    void sink_it_(const spdlog::details::log_msg& message) override {
++        static os_log_t log = os_log_create("com.subtlepath.spaghettipad", "engine");
++
++        os_log_type_t type;
++        switch (message.level) {
++            case spdlog::level::critical:
++            case spdlog::level::err:
++                type = OS_LOG_TYPE_ERROR;
++                break;
++            case spdlog::level::warn:
++                type = OS_LOG_TYPE_DEFAULT;
++                break;
++            case spdlog::level::trace:
++            case spdlog::level::debug:
++                type = OS_LOG_TYPE_DEBUG;
++                break;
++            default:
++                type = OS_LOG_TYPE_INFO;
++                break;
++        }
++
++        // %{public}s, because an engine log line carries no personal data and a
++        // redacted one is worth nothing in an archive. The payload is copied to
++        // get a terminator: spdlog hands out a pointer and a length, not a
++        // C string.
++        const std::string payload(message.payload.data(), message.payload.size());
++        os_log_with_type(log, type, "%{public}s", payload.c_str());
++    }
++
++    // os_log owns its own buffering and offers nothing to flush.
++    void flush_() override {
++    }
++};
++} // namespace
++#endif
++
+ namespace Ship {
+ std::weak_ptr<Context> Context::mContext;
+ 
+@@ -163,6 +219,9 @@ bool Context::InitLogging(spdlog::level::level_enum debugBuildLogLevel,
+         auto logPath = GetPathRelativeToAppDirectory(("logs/" + GetName() + ".log"));
+         auto fileSink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(logPath, 1024 * 1024 * 10, 10);
+         sinks.push_back(fileSink);
++#ifdef __VISIONOS__
++        sinks.push_back(std::make_shared<OsLogSink>());
++#endif
+ #ifdef _DEBUG
+         mLogger = std::make_shared<spdlog::logger>("multi_sink", sinks.begin(), sinks.end());
+         GetLogger()->set_level(debugBuildLogLevel);
+@@ -479,11 +538,6 @@ std::string Context::GetAppBundlePath() {
      }
  #endif
  
@@ -2335,7 +2901,7 @@ index 26d2ec2c..c87c2166 100644
      return CMAKE_INSTALL_PREFIX;
  #else
 diff --git a/src/ship/audio/Audio.cpp b/src/ship/audio/Audio.cpp
-index f09a6898..03e08eff 100644
+index f09a6898..e1ccf966 100644
 --- a/src/ship/audio/Audio.cpp
 +++ b/src/ship/audio/Audio.cpp
 @@ -1,12 +1,16 @@
@@ -2407,7 +2973,7 @@ index f09a6898..03e08eff 100644
 +
  } // namespace Ship
 diff --git a/src/ship/audio/SDLAudioPlayer.cpp b/src/ship/audio/SDLAudioPlayer.cpp
-index d9f1e44d..d7af5c35 100644
+index d9f1e44d..450d3bd2 100644
 --- a/src/ship/audio/SDLAudioPlayer.cpp
 +++ b/src/ship/audio/SDLAudioPlayer.cpp
 @@ -1,6 +1,18 @@
@@ -2499,17 +3065,28 @@ index 5a818efd..297086de 100644
  #endif
  
 diff --git a/src/ship/window/gui/Gui.cpp b/src/ship/window/gui/Gui.cpp
-index 426a965e..e97e19de 100644
+index 426a965e..305adafc 100644
 --- a/src/ship/window/gui/Gui.cpp
 +++ b/src/ship/window/gui/Gui.cpp
-@@ -7,6 +7,39 @@
+@@ -7,6 +7,375 @@
  #include <string>
  #include <vector>
  
 +#ifdef __VISIONOS__
++#include <bitset>
 +#include <chrono>
++#include <cstdlib>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include <SDL2/SDL.h>
++#include <TargetConditionals.h>
 +
 +#include "fast/backends/gfx_visionos.h"
++#include "ship/Context.h"
++#include "ship/controller/controldeck/ControlDeck.h"
++#include "ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h"
 +
 +// Defined by the visionOS shell (see visionos/SpaghettiPadBridge.h). Declared
 +// weak with a no-op default so libultraship still links on its own.
@@ -2517,10 +3094,294 @@ index 426a965e..e97e19de 100644
 +}
 +
 +namespace {
-+// What ImGui's SDL2 platform backend would have supplied, and all of it that
-+// applies here: how big the surface is and how long the last frame took. There
-+// is no pointer, no keyboard, no clipboard and no IME in an immersive space, so
-+// there is nothing else to feed in. Controller navigation arrives in Phase 5.
++
++// ------------------------------------------------------------- scripted pad
++//
++// A timed sequence of button presses, read from SPAGHETTIPAD_SCRIPTED_PAD and
++// merged into the pads below as if it were one more of them.
++//
++// It exists because the settings menu is reachable only from a controller, and
++// a controller is the one part of this lane that cannot be arranged on demand:
++// the Simulator has no pads of its own and forwards only what is attached to
++// the Mac. Without this the whole of Phase 6 would ship written and never once
++// run — which is exactly what the previous phase paid for discovering late.
++//
++// SDL's own virtual-joystick driver would have been the honest way to do this
++// and is not available: SDL declares SDL_VIRTUAL_JOYSTICK dependent on
++// SDL_HIDAPI, and this lane forces SDL_HIDAPI off because SDL 2.32.10 has no
++// visionOS branch where it picks a HIDAPI backend and fails to compile. So the
++// substitution is made one layer higher, at the button state itself, which
++// keeps the SDL-to-ImGui mapping below on the exercised side of the line: a
++// scripted press travels through the same table, the same merge, the same
++// ImGuiKey and the same nav machinery a real pad's would. What stays untested
++// here is SDL_GameControllerGetButton reporting real hardware, which is
++// upstream's and is shared with every other platform.
++//
++// Compiled only for the Simulator, which is the only place it could be honest:
++// a headset has real controllers, and the shell already draws this line for
++// SPAGHETTIPAD_AUTO_OPEN_IMMERSIVE_SPACE for the same reason. Nothing below
++// exists in the device build that gets audited and packaged.
++//
++// Compiled only for the Simulator, which is the only place it could be honest:
++// a headset has real controllers, and the shell already draws this line for
++// SPAGHETTIPAD_AUTO_OPEN_IMMERSIVE_SPACE for the same reason. The device build
++// that gets audited and packaged carries the stub below instead, so no synthetic
++// input path exists in a shipped artifact at all — not disabled, absent.
++//
++// Format: comma-separated `ms:name[:holdms]`, milliseconds from the first
++// frame. `SPAGHETTIPAD_SCRIPTED_PAD=8000:back,9500:dpaddown,10000:a`
++#if TARGET_OS_SIMULATOR
++class ScriptedPad {
++  public:
++    static ScriptedPad& Shared() {
++        static ScriptedPad pad;
++        return pad;
++    }
++
++    bool Active() const {
++        return !mSteps.empty();
++    }
++
++    // Advanced once per frame, before anything reads it.
++    void Advance() {
++        if (mSteps.empty()) {
++            return;
++        }
++        using clock = std::chrono::steady_clock;
++        if (!mStarted) {
++            mStarted = true;
++            mOrigin = clock::now();
++        }
++        const int64_t now =
++            std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - mOrigin).count();
++
++        mButtons.reset();
++        for (Step& step : mSteps) {
++            const bool held = now >= step.at && now < step.at + step.hold;
++            if (held) {
++                mButtons.set((size_t)step.button);
++            }
++            // Once each, so the log reads as a list of what was pressed rather
++            // than as one line per frame for the length of the hold.
++            if (held && !step.reported) {
++                step.reported = true;
++                SPDLOG_INFO("[scripted-pad] {} at {} ms", step.name, now);
++            }
++        }
++    }
++
++    bool Button(SDL_GameControllerButton button) const {
++        if (button < 0 || (size_t)button >= mButtons.size()) {
++            return false;
++        }
++        return mButtons.test((size_t)button);
++    }
++
++  private:
++    struct Step {
++        int64_t at = 0;
++        int64_t hold = 0;
++        SDL_GameControllerButton button = SDL_CONTROLLER_BUTTON_INVALID;
++        std::string name;
++        bool reported = false;
++    };
++
++    ScriptedPad() {
++        const char* script = std::getenv("SPAGHETTIPAD_SCRIPTED_PAD");
++        if (script == nullptr || *script == '\0') {
++            return;
++        }
++        Parse(script);
++        if (mSteps.empty()) {
++            SPDLOG_ERROR("[scripted-pad] nothing usable in SPAGHETTIPAD_SCRIPTED_PAD: {}", script);
++            return;
++        }
++        // Loud on purpose. A build taking synthetic input must never be mistaken
++        // in a log for one a person was holding a controller for.
++        SPDLOG_WARN("[scripted-pad] active with {} step(s); input below is synthetic", mSteps.size());
++    }
++
++    static SDL_GameControllerButton ButtonNamed(const std::string& name) {
++        static const std::unordered_map<std::string, SDL_GameControllerButton> kNames = {
++            { "a", SDL_CONTROLLER_BUTTON_A },
++            { "b", SDL_CONTROLLER_BUTTON_B },
++            { "x", SDL_CONTROLLER_BUTTON_X },
++            { "y", SDL_CONTROLLER_BUTTON_Y },
++            { "back", SDL_CONTROLLER_BUTTON_BACK },
++            { "start", SDL_CONTROLLER_BUTTON_START },
++            { "l1", SDL_CONTROLLER_BUTTON_LEFTSHOULDER },
++            { "r1", SDL_CONTROLLER_BUTTON_RIGHTSHOULDER },
++            { "l3", SDL_CONTROLLER_BUTTON_LEFTSTICK },
++            { "r3", SDL_CONTROLLER_BUTTON_RIGHTSTICK },
++            { "dpadup", SDL_CONTROLLER_BUTTON_DPAD_UP },
++            { "dpaddown", SDL_CONTROLLER_BUTTON_DPAD_DOWN },
++            { "dpadleft", SDL_CONTROLLER_BUTTON_DPAD_LEFT },
++            { "dpadright", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
++        };
++        const auto found = kNames.find(name);
++        return found == kNames.end() ? SDL_CONTROLLER_BUTTON_INVALID : found->second;
++    }
++
++    // strtoll rather than stoll: this parses attacker-irrelevant but
++    // malformed-on-a-typo input, and reporting the typo is more useful than
++    // depending on exceptions being enabled in every configuration this builds in.
++    static bool ParseNumber(const std::string& text, int64_t* out) {
++        if (text.empty()) {
++            return false;
++        }
++        char* end = nullptr;
++        const long long value = std::strtoll(text.c_str(), &end, 10);
++        if (end == nullptr || *end != '\0') {
++            return false;
++        }
++        *out = (int64_t)value;
++        return true;
++    }
++
++    void Parse(const std::string& script) {
++        // Long enough that ImGui sees a press and a release either side of it at
++        // any frame rate this app runs at, short enough not to auto-repeat.
++        const int64_t kDefaultHold = 120;
++
++        size_t start = 0;
++        while (start <= script.size()) {
++            const size_t comma = script.find(',', start);
++            const std::string item = script.substr(start, comma == std::string::npos ? comma : comma - start);
++            start = comma == std::string::npos ? script.size() + 1 : comma + 1;
++            if (item.empty()) {
++                continue;
++            }
++
++            const size_t firstColon = item.find(':');
++            if (firstColon == std::string::npos) {
++                SPDLOG_ERROR("[scripted-pad] ignoring malformed step: {}", item);
++                continue;
++            }
++            const size_t secondColon = item.find(':', firstColon + 1);
++
++            Step step;
++            step.name = item.substr(firstColon + 1, secondColon == std::string::npos ? secondColon
++                                                                                     : secondColon - firstColon - 1);
++            step.button = ButtonNamed(step.name);
++            if (step.button == SDL_CONTROLLER_BUTTON_INVALID) {
++                SPDLOG_ERROR("[scripted-pad] ignoring unknown button: {}", item);
++                continue;
++            }
++            if (!ParseNumber(item.substr(0, firstColon), &step.at) ||
++                (secondColon != std::string::npos && !ParseNumber(item.substr(secondColon + 1), &step.hold))) {
++                SPDLOG_ERROR("[scripted-pad] ignoring unparsable timing: {}", item);
++                continue;
++            }
++            if (secondColon == std::string::npos) {
++                step.hold = kDefaultHold;
++            }
++            if (step.at < 0 || step.hold <= 0) {
++                SPDLOG_ERROR("[scripted-pad] ignoring out-of-range step: {}", item);
++                continue;
++            }
++            mSteps.push_back(step);
++        }
++    }
++
++    std::vector<Step> mSteps;
++    std::bitset<SDL_CONTROLLER_BUTTON_MAX> mButtons;
++    std::chrono::steady_clock::time_point mOrigin;
++    bool mStarted = false;
++};
++#else
++// The device build's whole scripted pad. Every caller below is written against
++// this shape, so nothing needs to know which one it got.
++class ScriptedPad {
++  public:
++    static ScriptedPad& Shared() {
++        static ScriptedPad pad;
++        return pad;
++    }
++
++    bool Active() const {
++        return false;
++    }
++
++    void Advance() {
++    }
++
++    bool Button(SDL_GameControllerButton) const {
++        return false;
++    }
++};
++#endif
++
++// The gamepads the control deck has open, deduplicated across ports.
++//
++// Not SDL's enumeration: ImGui's SDL2 backend calls SDL_GameControllerOpen on
++// everything it finds, which here would be a second handle on a device this
++// process already owns, opened and closed on a different schedule than the one
++// that owns it. The control deck's handles are the same devices and are already
++// refcounted by the manager that opened them, so this borrows rather than opens.
++// A pad on a port's ignore list is deliberately still collected: ignoring it for
++// the *game* says nothing about whether it may drive a menu.
++std::vector<SDL_GameController*> VisionOSNavGamepads() {
++    std::vector<SDL_GameController*> gamepads;
++
++    auto context = Ship::Context::GetInstance();
++    if (context == nullptr || context->GetControlDeck() == nullptr) {
++        return gamepads;
++    }
++    auto manager = context->GetControlDeck()->GetConnectedPhysicalDeviceManager();
++    if (manager == nullptr) {
++        return gamepads;
++    }
++
++    std::unordered_map<int32_t, SDL_GameController*> byInstanceId;
++    for (uint8_t port = 0; port < 4; ++port) {
++        for (const auto& [instanceId, gamepad] : manager->GetConnectedSDLGamepadsForPort(port)) {
++            if (gamepad != nullptr) {
++                byInstanceId[instanceId] = gamepad;
++            }
++        }
++    }
++
++    gamepads.reserve(byInstanceId.size());
++    for (const auto& [instanceId, gamepad] : byInstanceId) {
++        gamepads.push_back(gamepad);
++    }
++    return gamepads;
++}
++
++// Merged across every pad, as ImGui's own backend does: whoever is holding the
++// button is driving the menu, and which one it is does not matter. The scripted
++// pad merges in on the same terms, which is what keeps this table on the
++// exercised side of the line described above.
++void VisionOSNavButton(const std::vector<SDL_GameController*>& gamepads, ImGuiIO* io, ImGuiKey key,
++                       SDL_GameControllerButton button) {
++    bool merged = ScriptedPad::Shared().Button(button);
++    for (SDL_GameController* gamepad : gamepads) {
++        merged |= SDL_GameControllerGetButton(gamepad, button) != 0;
++    }
++    io->AddKeyEvent(key, merged);
++}
++
++void VisionOSNavAnalog(const std::vector<SDL_GameController*>& gamepads, ImGuiIO* io, ImGuiKey key,
++                       SDL_GameControllerAxis axis, float v0, float v1) {
++    float merged = 0.0f;
++    for (SDL_GameController* gamepad : gamepads) {
++        float value = ((float)SDL_GameControllerGetAxis(gamepad, axis) - v0) / (v1 - v0);
++        value = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
++        if (merged < value) {
++            merged = value;
++        }
++    }
++    io->AddKeyAnalogEvent(key, merged > 0.1f, merged);
++}
++
++// What ImGui's SDL2 platform backend supplies that applies here. There is no
++// pointer, no keyboard, no clipboard and no IME in an immersive space, so the
++// surface size, the frame time and the pads are the whole of it.
++//
++// The pads are not optional garnish. Replacing ImGui_ImplSDL2_NewFrame removed
++// the only caller of ImGui_ImplSDL2_UpdateGamepads, so before this every
++// ImGuiKey_Gamepad* stayed at rest forever: the menu could not be opened, and
++// could not have been navigated if it had been.
 +void VisionOSNewFrame(ImGuiIO* io) {
 +    uint32_t width = 0;
 +    uint32_t height = 0;
@@ -2535,6 +3396,47 @@ index 426a965e..e97e19de 100644
 +    // ImGui asserts on a non-positive delta, which a first frame or a clock that
 +    // did not advance would otherwise produce.
 +    io->DeltaTime = delta > 0.0f ? delta : 1.0f / 60.0f;
++
++    ScriptedPad::Shared().Advance();
++
++    const std::vector<SDL_GameController*> gamepads = VisionOSNavGamepads();
++    // Not decoration: ImGui clears every ImGuiKey_Gamepad* it holds each frame
++    // unless a backend claims this flag, so without it nothing below survives to
++    // the frame that would read it.
++    io->BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
++    if (gamepads.empty() && !ScriptedPad::Shared().Active()) {
++        return;
++    }
++    io->BackendFlags |= ImGuiBackendFlags_HasGamepad;
++
++    // SDL_gamecontroller.h's suggested value, and the same one ImGui's backend
++    // uses. Kept identical so a menu behaves the same here as on the desktop
++    // build people compare it against.
++    const int thumbDeadZone = 8000;
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadStart, SDL_CONTROLLER_BUTTON_START);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadBack, SDL_CONTROLLER_BUTTON_BACK);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadFaceLeft, SDL_CONTROLLER_BUTTON_X);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadFaceRight, SDL_CONTROLLER_BUTTON_B);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadFaceUp, SDL_CONTROLLER_BUTTON_Y);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadFaceDown, SDL_CONTROLLER_BUTTON_A);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadDpadLeft, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadDpadRight, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadDpadUp, SDL_CONTROLLER_BUTTON_DPAD_UP);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadDpadDown, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadL1, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadR1, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadL2, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 0.0f, 32767.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadR2, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 0.0f, 32767.0f);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadL3, SDL_CONTROLLER_BUTTON_LEFTSTICK);
++    VisionOSNavButton(gamepads, io, ImGuiKey_GamepadR3, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadLStickLeft, SDL_CONTROLLER_AXIS_LEFTX, -thumbDeadZone, -32768.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadLStickRight, SDL_CONTROLLER_AXIS_LEFTX, thumbDeadZone, 32767.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadLStickUp, SDL_CONTROLLER_AXIS_LEFTY, -thumbDeadZone, -32768.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadLStickDown, SDL_CONTROLLER_AXIS_LEFTY, thumbDeadZone, 32767.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadRStickLeft, SDL_CONTROLLER_AXIS_RIGHTX, -thumbDeadZone, -32768.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadRStickRight, SDL_CONTROLLER_AXIS_RIGHTX, thumbDeadZone, 32767.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadRStickUp, SDL_CONTROLLER_AXIS_RIGHTY, -thumbDeadZone, -32768.0f);
++    VisionOSNavAnalog(gamepads, io, ImGuiKey_GamepadRStickDown, SDL_CONTROLLER_AXIS_RIGHTY, thumbDeadZone, 32767.0f);
 +}
 +} // namespace
 +#endif
@@ -2542,7 +3444,7 @@ index 426a965e..e97e19de 100644
  #include "ship/config/Config.h"
  #include "ship/Context.h"
  #include "ship/config/ConsoleVariable.h"
-@@ -164,11 +197,22 @@ void Gui::ImGuiWMInit() {
+@@ -164,11 +533,22 @@ void Gui::ImGuiWMInit() {
              break;
  #if __APPLE__
          case WindowBackend::FAST3D_SDL_METAL:
@@ -2565,7 +3467,7 @@ index 426a965e..e97e19de 100644
              break;
  #endif
  #if defined(ENABLE_DX11) || defined(ENABLE_DX12)
-@@ -191,7 +235,9 @@ void Gui::ShutDownImGui(Ship::Window* window) {
+@@ -191,7 +571,9 @@ void Gui::ShutDownImGui(Ship::Window* window) {
  #endif
  #if __APPLE__
          case WindowBackend::FAST3D_SDL_METAL:
@@ -2575,7 +3477,24 @@ index 426a965e..e97e19de 100644
              ImGui_ImplMetal_Shutdown();
              break;
  #endif
-@@ -291,9 +337,15 @@ void Gui::HandleWindowEvents(WindowEvent event) {
+@@ -276,6 +658,16 @@ bool Gui::SupportsViewports() {
+     return false;
+ #endif
+ 
++#ifdef __VISIONOS__
++    // A viewport is a second operating-system window, and the platform half that
++    // would create one is ImGui's SDL2 backend, which this app replaced with its
++    // own (see the top of this file) precisely because there is no window to
++    // wrap. visionOS reaches the switch below only because it is neither
++    // __ANDROID__ nor __IOS__, and the FAST3D_SDL_METAL arm then answers for an
++    // SDL that is not driving anything here.
++    return false;
++#endif
++
+     switch (Context::GetInstance()->GetWindow()->GetWindowBackend()) {
+         case WindowBackend::FAST3D_DXGI_DX11:
+             return true;
+@@ -291,9 +683,15 @@ void Gui::HandleWindowEvents(WindowEvent event) {
      switch (Context::GetInstance()->GetWindow()->GetWindowBackend()) {
          case WindowBackend::FAST3D_SDL_OPENGL:
          case WindowBackend::FAST3D_SDL_METAL:
@@ -2591,7 +3510,7 @@ index 426a965e..e97e19de 100644
  #endif
              break;
  #ifdef ENABLE_DX11
-@@ -367,7 +419,11 @@ void Gui::ImGuiWMNewFrame() {
+@@ -367,7 +765,11 @@ void Gui::ImGuiWMNewFrame() {
      switch (Context::GetInstance()->GetWindow()->GetWindowBackend()) {
          case WindowBackend::FAST3D_SDL_OPENGL:
          case WindowBackend::FAST3D_SDL_METAL:
@@ -2603,18 +3522,7 @@ index 426a965e..e97e19de 100644
              break;
  #ifdef ENABLE_DX11
          case WindowBackend::FAST3D_DXGI_DX11:
-@@ -570,6 +626,10 @@ void Gui::DrawMenu() {
-         GetMenu()->Draw();
-     }
- 
-+#ifdef __VISIONOS__
-+    SpaghettiPad_SetMenuVisible(GetMenuOrMenubarVisible());
-+#endif
-+
-     for (auto& windowIter : mGuiWindows) {
-         windowIter.second->Update();
-         windowIter.second->Draw();
-@@ -716,6 +776,26 @@ void Gui::DrawGame() {
+@@ -716,6 +1118,56 @@ void Gui::DrawGame() {
          }
      }
      uintptr_t fb = Ship::Context::GetInstance()->GetWindow()->GetGfxFrameBuffer();
@@ -2636,8 +3544,53 @@ index 426a965e..e97e19de 100644
 +                        mInterpreter.lock()->mCurDimensions.width,
 +                        mInterpreter.lock()->mCurDimensions.height);
 +        }
++        // Where the settings menu sits relative to the game image, once per
++        // change. The image is opaque and covers the whole surface, so "the menu
++        // is open" and "the menu is visible" are different claims and this is
++        // what tells them apart.
++        // Deliberately once per launch and not per frame. An earlier version of
++        // this reported every nav change, which was how the walk below was
++        // debugged and is also how a device build gets its logging quarantined
++        // by libsystem_trace — which happened to a wearer's session on
++        // 2026-08-02 and cost the last three minutes before a crash.
++        static bool reportedMenu = false;
++        ImGuiContext& g = *ImGui::GetCurrentContext();
++        ImGuiWindow* menuWindow = ImGui::FindWindowByName("Main Menu");
++        if (!reportedMenu && menuWindow != nullptr && menuWindow->Active) {
++            reportedMenu = true;
++            int menuIndex = -1;
++            int gameIndex = -1;
++            for (int i = 0; i < g.Windows.Size; ++i) {
++                if (g.Windows[i] == menuWindow) {
++                    menuIndex = i;
++                }
++                if (g.Windows[i]->ID == ImHashStr("Main Game")) {
++                    gameIndex = i;
++                }
++            }
++            SPDLOG_INFO("[menu] first open: {:.0f}x{:.0f} at ({:.0f},{:.0f}), {}, gamepad nav {}, pad seen {}",
++                        menuWindow->Size.x, menuWindow->Size.y, menuWindow->Pos.x, menuWindow->Pos.y,
++                        menuIndex > gameIndex ? "above the game" : "BEHIND THE GAME",
++                        (mImGuiIo->ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) != 0 ? "on" : "OFF",
++                        (mImGuiIo->BackendFlags & ImGuiBackendFlags_HasGamepad) != 0 ? "yes" : "NO");
++        }
 +    }
 +#endif
      if (fb) {
          ImGui::SetCursorPos(pos);
          ImGui::Image(reinterpret_cast<ImTextureID>(fb), size);
+@@ -766,6 +1218,14 @@ void Gui::StartDraw() {
+     StartFrame();
+     // Draw the gui menus
+     DrawMenu();
++#ifdef __VISIONOS__
++    // Here rather than inside DrawMenu, which is virtual and which SpaghettiKart
++    // overrides without chaining (see SpaghettiGui) — so a notification written
++    // there reached the shell in exactly the configurations nobody ships. This
++    // caller is not virtual, and a headset that cannot be screenshotted has no
++    // other way to report that its menu opened.
++    SpaghettiPad_SetMenuVisible(GetMenuOrMenubarVisible());
++#endif
+     // Calculate the available space the game can render to
+     CalculateGameViewport();
+ }
