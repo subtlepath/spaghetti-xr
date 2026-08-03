@@ -1,4 +1,4 @@
-# SpaghettiPad
+# Spaghetti-XR
 
 <p align="center">
   <strong>Mario Kart 64 on Apple Vision Pro—drawn around you in a fully immersive space.</strong><br>
@@ -16,7 +16,8 @@
   <img alt="ROM not included" src="https://img.shields.io/badge/game%20data-not%20included-FF453A">
 </p>
 
-SpaghettiPad packages the full
+Vibe-forked from [SpaghettiPad](https://github.com/chrissotraidis/spaghettipad),
+Sphagetti-XR packages the full
 [SpaghettiKart](https://github.com/HarbourMasters/SpaghettiKart) source port as
 a native visionOS app. The engine runs on Apple's Compositor Services inside a
 fully immersive space, interprets each frame's display list once per eye against
